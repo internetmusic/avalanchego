@@ -35,11 +35,11 @@ const (
 // Channel and Unsubscribe match the format of avalancheGoJson.PubSub, and will become the default pass through to underlying pubsub server
 type CommandMessage struct {
 	Command          string   `json:"command"`
-	Channel          string   `json:"channel"`
-	AddressUpdate    [][]byte `json:"addressUpdate"`
-	BloomFilterMax   uint64   `json:"bloomFilterMax"`
-	BloomFilterError float64  `json:"bloomFilterError"`
-	Unsubscribe      bool     `json:"unsubscribe"`
+	Channel          string   `json:"channel,omitempty"`
+	AddressUpdate    [][]byte `json:"addressUpdate,omitempty"`
+	BloomFilterMax   uint64   `json:"bloomFilterMax,omitempty"`
+	BloomFilterError float64  `json:"bloomFilterError,omitempty"`
+	Unsubscribe      bool     `json:"unsubscribe,omitempty"`
 }
 
 type errorMsg struct {
