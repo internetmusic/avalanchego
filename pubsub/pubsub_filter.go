@@ -65,21 +65,21 @@ type Filter interface {
 }
 
 type pubsubfilter struct {
-	hrp        string
-	po         *avalancheGoJson.PubSubServer
-	lock       sync.RWMutex
-	fp         map[*avalancheGoJson.Connection]*FilterParam
-	channelMap map[string]map[*avalancheGoJson.Connection]struct{}
+	hrp          string
+	po           *avalancheGoJson.PubSubServer
+	lock         sync.RWMutex
+	filterParams map[*avalancheGoJson.Connection]*FilterParam
+	channelMap   map[string]map[*avalancheGoJson.Connection]struct{}
 }
 
 func NewPubSubServerWithFilter(ctx *snow.Context) Filter {
 	hrp := constants.GetHRP(ctx.NetworkID)
 	po := avalancheGoJson.NewPubSubServer(ctx)
 	psf := &pubsubfilter{
-		hrp:        hrp,
-		po:         po,
-		channelMap: make(map[string]map[*avalancheGoJson.Connection]struct{}),
-		fp:         make(map[*avalancheGoJson.Connection]*FilterParam),
+		hrp:          hrp,
+		po:           po,
+		channelMap:   make(map[string]map[*avalancheGoJson.Connection]struct{}),
+		filterParams: make(map[*avalancheGoJson.Connection]*FilterParam),
 	}
 	// inject our callbacks..
 	po.SetReadCallback(psf.readCallback, psf.connectionCallback)
@@ -95,12 +95,12 @@ func (ps *pubsubfilter) connectionCallback(conn *avalancheGoJson.Connection, cha
 			ps.channelMap[channel] = make(map[*avalancheGoJson.Connection]struct{})
 		}
 		ps.channelMap[channel][conn] = struct{}{}
-		ps.fp[conn] = &FilterParam{}
+		ps.filterParams[conn] = &FilterParam{}
 	} else {
 		if channel, exists := ps.channelMap[channel]; exists {
 			delete(channel, conn)
 		}
-		delete(ps.fp, conn)
+		delete(ps.filterParams, conn)
 	}
 }
 
@@ -115,15 +115,15 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 		return true, []byte(""), err
 	}
 	b := bb.Bytes()
-	subscribe := &commandMessage{}
-	err = json.NewDecoder(bytes.NewReader(b)).Decode(subscribe)
+	cmdMsg := &commandMessage{}
+	err = json.NewDecoder(bytes.NewReader(b)).Decode(cmdMsg)
 	if err != nil {
 		return true, b, err
 	}
 
 	fp := ps.fetchFilterParam(c)
 	if fp != nil {
-		return ps.handleCommand(subscribe, send, fp, b)
+		return ps.handleCommand(cmdMsg, send, fp, b)
 	}
 	return false, b, nil
 }
@@ -131,10 +131,14 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterParam {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
-	if ffp, ok := ps.fp[c]; ok {
-		return ffp
+	var filterParamResponse *FilterParam
+	if filterParam, ok := ps.filterParams[c]; ok {
+		filterParamResponse = filterParam
+	} else {
+		filterParamResponse = &FilterParam{}
+		ps.filterParams[c] = filterParamResponse
 	}
-	return nil
+	return filterParamResponse
 }
 
 func (ps *pubsubfilter) handleCommand(
@@ -229,7 +233,7 @@ func (ps *pubsubfilter) handleCommand(
 
 func (ps *pubsubfilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn := ps.po.ServeHTTP(w, r)
-	ps.fp[conn] = ps.buildFilter(r)
+	ps.filterParams[conn] = ps.buildFilter(r)
 }
 
 func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
@@ -260,7 +264,7 @@ func (ps *pubsubfilter) doPublish(channel string, msg interface{}, parser Parser
 	defer ps.lock.RUnlock()
 	if conns, exists := ps.channelMap[channel]; exists {
 		for conn := range conns {
-			if fp, exists := ps.fp[conn]; exists && (fp.BFilter != nil || len(fp.Address) != 0) {
+			if fp, exists := ps.filterParams[conn]; exists && (fp.BFilter != nil || len(fp.Address) != 0) {
 				fr := parser.Filter(fp)
 				if fr == nil {
 					continue
