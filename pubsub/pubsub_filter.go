@@ -19,7 +19,7 @@ import (
 type FilterParam struct {
 	lock    sync.RWMutex
 	Address map[ids.ShortID]struct{}
-	Bfilter BloomFilter
+	BFilter BloomFilter
 }
 
 const (
@@ -37,11 +37,10 @@ type subscribe struct {
 	Command            string   `json:"command"`
 	Channel            string   `json:"channel"`
 	Unsubscribe        bool     `json:"unsubscribe"`
-	AddressUpdate      string   `json:"addressUpdate"`
+	AddressUpdate      []string   `json:"addressUpdate"`
 	AddressUnsubscribe bool     `json:"addressUnsubscribe"`
 	BloomFilterMax     uint64   `json:"bloomFilterMax"`
 	BloomFilterError   float64  `json:"bloomFilterError"`
-	BloomFilterAdd     [][]byte `json:"bloomFilterAdd"`
 }
 
 type errorMsg struct {
@@ -149,19 +148,21 @@ func (ps *pubsubfilter) handleCommand(
 	switch subscribe.Command {
 	case CommandAddressUpdate:
 		fp.lock.Lock()
-		sid, err := AddressToID(subscribe.AddressUpdate)
-		if err != nil {
-			errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
-			send <- errmsg
-		} else if sid != nil {
-			if subscribe.AddressUnsubscribe {
-				delete(fp.Address, *sid)
-			} else {
-				if len(fp.Address) > MaxAddresses {
-					errmsg := &errorMsg{Error: "address update err max addresses"}
-					send <- errmsg
+		for _, addr := range subscribe.AddressUpdate {
+			sid, err := AddressToID(addr)
+			if err != nil {
+				errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
+				send <- errmsg
+			} else if sid != nil {
+				if subscribe.AddressUnsubscribe {
+					delete(fp.Address, *sid)
 				} else {
-					fp.Address[*sid] = struct{}{}
+					if len(fp.Address) > MaxAddresses {
+						errmsg := &errorMsg{Error: "address update err max addresses"}
+						send <- errmsg
+					} else {
+						fp.Address[*sid] = struct{}{}
+					}
 				}
 			}
 		}
@@ -169,22 +170,23 @@ func (ps *pubsubfilter) handleCommand(
 	case CommandBloomFilterAdd:
 		fp.lock.Lock()
 		// no filter exists... lets just make one up
-		if fp.Bfilter == nil {
+		if fp.BFilter == nil {
 			bfilter, err := NewBloomFilter(512, .1)
 			if err != nil {
-				fp.Bfilter = bfilter
+				fp.BFilter = bfilter
 			} else {
 				errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
 				send <- errmsg
 			}
 		}
-		if fp.Bfilter == nil {
+		if fp.BFilter == nil {
 			errmsg := &errorMsg{Error: "filter invalid"}
 			send <- errmsg
 		} else {
-			for _, bfilterValue := range subscribe.BloomFilterAdd {
-				if len(bfilterValue) != 0 {
-					err := fp.Bfilter.Add(bfilterValue)
+			for _, addr := range subscribe.AddressUpdate {
+				sid, err := AddressToID(addr)
+				if err == nil {
+					err = fp.BFilter.Add(sid[:])
 					if err != nil {
 						errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
 						send <- errmsg
@@ -197,7 +199,7 @@ func (ps *pubsubfilter) handleCommand(
 		bfilter, err := NewBloomFilter(subscribe.BloomFilterMax, subscribe.BloomFilterError)
 		if err != nil {
 			fp.lock.Lock()
-			fp.Bfilter = bfilter
+			fp.BFilter = bfilter
 			fp.lock.Unlock()
 		} else {
 			errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
@@ -244,8 +246,8 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) {
 			continue
 		}
 		for _, value := range values[valuesk] {
-			sid, _ := AddressToID(value)
-			if sid != nil {
+			sid, err := AddressToID(value)
+			if err == nil {
 				if len(fp.Address) <= MaxAddresses {
 					fp.Address[*sid] = struct{}{}
 				}
@@ -259,7 +261,7 @@ func (ps *pubsubfilter) doPublish(channel string, msg interface{}, parser Parser
 	defer ps.lock.RUnlock()
 	if conns, exists := ps.channelMap[channel]; exists {
 		for conn := range conns {
-			if fp, exists := ps.fp[conn]; exists && (fp.Bfilter != nil || len(fp.Address) != 0) {
+			if fp, exists := ps.fp[conn]; exists && (fp.BFilter != nil || len(fp.Address) != 0) {
 				fr := parser.Filter(fp)
 				if fr == nil {
 					continue

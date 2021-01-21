@@ -27,8 +27,8 @@ func (p *parser) Filter(param *pubsub.FilterParam) *pubsub.FilterResponse {
 					continue
 				}
 				copy(sid[:], address)
-				if param.Bfilter != nil {
-					matched, err := param.Bfilter.Check(sid[:])
+				if param.BFilter != nil {
+					matched, err := param.BFilter.Check(sid[:])
 					if err == nil && matched {
 						return &pubsub.FilterResponse{TxID: p.tx.ID(), FilteredAddress: sid}
 					}
