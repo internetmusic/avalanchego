@@ -31,9 +31,9 @@ const (
 	MaxAddresses = 10000
 )
 
-// commandMessage command message
+// CommandMessage command message
 // Channel and Unsubscribe match the format of avalancheGoJson.PubSub, and will become the default pass through to underlying pubsub server
-type commandMessage struct {
+type CommandMessage struct {
 	Command          string   `json:"command"`
 	Channel          string   `json:"channel"`
 	AddressUpdate    [][]byte `json:"addressUpdate"`
@@ -117,7 +117,7 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 		return true, []byte(""), err
 	}
 	b := bb.Bytes()
-	cmdMsg := &commandMessage{}
+	cmdMsg := &CommandMessage{}
 	err = json.NewDecoder(bytes.NewReader(b)).Decode(cmdMsg)
 	if err != nil {
 		return true, b, err
@@ -144,22 +144,22 @@ func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterP
 }
 
 func (ps *pubsubfilter) handleCommand(
-	subscribe *commandMessage,
+	cmdMsg *CommandMessage,
 	send chan interface{},
 	fp *FilterParam,
 	b []byte,
 ) (bool, []byte, error) {
 	var err error
-	switch subscribe.Command {
+	switch cmdMsg.Command {
 	case CommandAddressUpdate:
 		fp.lock.Lock()
-		for _, addr := range subscribe.AddressUpdate {
+		for _, addr := range cmdMsg.AddressUpdate {
 			sid, err := ByteToID(addr)
 			if err != nil {
 				errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
 				send <- errmsg
 			} else if sid != nil {
-				if subscribe.Unsubscribe {
+				if cmdMsg.Unsubscribe {
 					delete(fp.Address, *sid)
 				} else {
 					if len(fp.Address) > MaxAddresses {
@@ -188,7 +188,7 @@ func (ps *pubsubfilter) handleCommand(
 			errmsg := &errorMsg{Error: "filter invalid"}
 			send <- errmsg
 		} else {
-			for _, addr := range subscribe.AddressUpdate {
+			for _, addr := range cmdMsg.AddressUpdate {
 				sid, err := ByteToID(addr)
 				if err == nil {
 					err = fp.BFilter.Add(sid[:])
@@ -201,7 +201,7 @@ func (ps *pubsubfilter) handleCommand(
 		}
 		fp.lock.Unlock()
 	case CommandFilterCreate:
-		bfilter, err := NewBloomFilter(subscribe.BloomFilterMax, subscribe.BloomFilterError)
+		bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
 		if err != nil {
 			fp.lock.Lock()
 			fp.BFilter = bfilter
@@ -213,19 +213,19 @@ func (ps *pubsubfilter) handleCommand(
 	case "":
 		// default condition re-builds this message as avalancheGoJson.Subscribe
 		// and allows parent pubsub_server to handle the request
-		channelCommand := &avalancheGoJson.Subscribe{Channel: subscribe.Channel, Unsubscribe: subscribe.Unsubscribe}
+		channelCommand := &avalancheGoJson.Subscribe{Channel: cmdMsg.Channel, Unsubscribe: cmdMsg.Unsubscribe}
 		channelBytes, err := json.Marshal(channelCommand)
 
 		// unexpected...
 		if err != nil {
-			errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", subscribe.Command, err)}
+			errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", cmdMsg.Command, err)}
 			send <- errmsg
 			return true, b, fmt.Errorf(errmsg.Error)
 		}
 
 		return false, channelBytes, nil
 	default:
-		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", subscribe.Command, err)}
+		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", cmdMsg.Command, err)}
 		send <- errmsg
 		return true, b, fmt.Errorf(errmsg.Error)
 	}
@@ -235,6 +235,8 @@ func (ps *pubsubfilter) handleCommand(
 
 func (ps *pubsubfilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn := ps.po.ServeHTTP(w, r)
+	ps.lock.RLock()
+	defer ps.lock.RUnlock()
 	ps.filterParams[conn] = ps.buildFilter(r)
 }
 
