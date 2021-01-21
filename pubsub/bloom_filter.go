@@ -3,6 +3,7 @@ package pubsub
 import (
 	"fmt"
 	"github.com/willf/bitset"
+	"math"
 	"time"
 
 	btcsuiteWire "github.com/btcsuite/btcd/wire"
@@ -41,8 +42,8 @@ type willfFilter struct {
 }
 
 func newWillfFilter(maxN uint64, p float64) (BloomFilter, error) {
-	m := uint(OptimalM(maxN, p))
-	k := uint(OptimalK(uint64(m), maxN))
+	m := uint(optimalM(maxN, p))
+	k := uint(optimalK(uint64(m), maxN))
 
 	// this is pulled from bitset.
 	// the calculation is the size of the bitset which would be created from this filter.
@@ -135,3 +136,18 @@ func wordsNeeded(i uint) int {
 	}
 	return int((i + (wordSize - 1)) >> log2WordSize)
 }
+
+
+// OptimalK calculates the optimal k value for creating a new Bloom filter
+// maxn is the maximum anticipated number of elements
+func optimalK(m, maxN uint64) uint64 {
+	return uint64(math.Ceil(float64(m) * math.Ln2 / float64(maxN)))
+}
+
+// OptimalM calculates the optimal m value for creating a new Bloom filter
+// p is the desired false positive probability
+// optimal m = ceiling( - n * ln(p) / ln(2)**2 )
+func optimalM(maxN uint64, p float64) uint64 {
+	return uint64(math.Ceil(-float64(maxN) * math.Log(p) / (math.Ln2 * math.Ln2)))
+}
+
