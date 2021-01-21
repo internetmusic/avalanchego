@@ -177,7 +177,7 @@ func (ps *pubsubfilter) handleCommand(
 		// no filter exists... lets just make one up
 		if fp.BFilter == nil {
 			bfilter, err := NewBloomFilter(512, .1)
-			if err != nil {
+			if err == nil {
 				fp.BFilter = bfilter
 			} else {
 				errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
@@ -203,7 +203,7 @@ func (ps *pubsubfilter) handleCommand(
 		return true, b, nil
 	case CommandFilterCreate:
 		bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
-		if err != nil {
+		if err == nil {
 			fp.lock.Lock()
 			fp.BFilter = bfilter
 			fp.lock.Unlock()
