@@ -32,7 +32,9 @@ func TestFilter(t *testing.T) {
 	baseTx.Outs = append(baseTx.Outs, to1)
 	tx.UnsignedTx = &baseTx
 	parser := NewPubSubParser(&tx)
-	fp := pubsub.FilterParam{Address: []ids.ShortID{idsid}}
+	addrfilter := make(map[ids.ShortID]int)
+	addrfilter[idsid] = 1
+	fp := pubsub.FilterParam{Address: addrfilter}
 	fr := parser.Filter(&fp)
 	if fr == nil {
 		t.Fatalf("filter failed")

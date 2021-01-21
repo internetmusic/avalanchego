@@ -4,7 +4,10 @@
 package json
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -51,9 +54,12 @@ var (
 type PubSubServer struct {
 	ctx *snow.Context
 
-	lock     sync.Mutex
-	conns    map[*Connection]map[string]struct{}
-	channels map[string]map[*Connection]struct{}
+	lock               sync.Mutex
+	conns              map[*Connection]map[string]struct{}
+	channels           map[string]map[*Connection]struct{}
+	callbackLock       sync.RWMutex
+	readCallback       func(*Connection, chan interface{}) (bool, []byte, error)
+	connectionCallback func(*Connection, string, bool)
 }
 
 // NewPubSubServer ...
@@ -65,14 +71,25 @@ func NewPubSubServer(ctx *snow.Context) *PubSubServer {
 	}
 }
 
-func (s *PubSubServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *PubSubServer) SetReadCallback(
+	readCallback func(*Connection, chan interface{}) (bool, []byte, error),
+	connectionCallback func(*Connection, string, bool),
+) {
+	s.callbackLock.Lock()
+	defer s.callbackLock.Unlock()
+	s.readCallback = readCallback
+	s.connectionCallback = connectionCallback
+}
+
+func (s *PubSubServer) ServeHTTP(w http.ResponseWriter, r *http.Request) *Connection {
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.ctx.Log.Debug("Failed to upgrade %s", err)
-		return
+		return nil
 	}
-	conn := &Connection{s: s, conn: wsConn, send: make(chan interface{}, maxPendingMessages)}
+	conn := &Connection{s: s, Conn: wsConn, send: make(chan interface{}, maxPendingMessages), readCallback: s.readCallback}
 	s.addConnection(conn)
+	return conn
 }
 
 // Publish ...
@@ -86,7 +103,7 @@ func (s *PubSubServer) Publish(channel string, msg interface{}) {
 		return
 	}
 
-	pubMsg := &publish{
+	pubMsg := &Publish{
 		Channel: channel,
 		Value:   msg,
 	}
@@ -101,22 +118,11 @@ func (s *PubSubServer) Publish(channel string, msg interface{}) {
 }
 
 // Publish ...
-func (s *PubSubServer) PublishRaw(channel string, msg interface{}) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	conns, exists := s.channels[channel]
-	if !exists {
-		s.ctx.Log.Warn("attempted to publush to an unknown channel %s", channel)
-		return
-	}
-
-	for conn := range conns {
-		select {
-		case conn.send <- msg:
-		default:
-			s.ctx.Log.Verbo("dropping message to subscribed connection due to too many pending messages")
-		}
+func (s *PubSubServer) PublishRaw(conn *Connection, msg interface{}) {
+	select {
+	case conn.send <- msg:
+	default:
+		s.ctx.Log.Verbo("dropping message to subscribed connection due to too many pending messages")
 	}
 }
 
@@ -171,6 +177,10 @@ func (s *PubSubServer) addChannel(conn *Connection, channel string) {
 		return
 	}
 
+	if s.connectionCallback != nil {
+		s.connectionCallback(conn, channel, true)
+	}
+
 	channels[channel] = struct{}{}
 	conns[conn] = struct{}{}
 }
@@ -189,16 +199,20 @@ func (s *PubSubServer) removeChannel(conn *Connection, channel string) {
 		return
 	}
 
+	if s.connectionCallback != nil {
+		s.connectionCallback(conn, channel, false)
+	}
+
 	delete(channels, channel)
 	delete(conns, conn)
 }
 
-type publish struct {
+type Publish struct {
 	Channel string      `json:"channel"`
 	Value   interface{} `json:"value"`
 }
 
-type subscribe struct {
+type Subscribe struct {
 	Channel     string `json:"channel"`
 	Unsubscribe bool   `json:"unsubscribe"`
 }
@@ -208,10 +222,11 @@ type Connection struct {
 	s *PubSubServer
 
 	// The websocket connection.
-	conn *websocket.Conn
+	Conn *websocket.Conn
 
 	// Buffered channel of outbound messages.
-	send chan interface{}
+	send         chan interface{}
+	readCallback func(*Connection, chan interface{}) (bool, []byte, error)
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -224,31 +239,51 @@ func (c *Connection) readPump() {
 		c.s.removeConnection(c)
 		// close is called by both the writePump and the readPump so one of them
 		// will always error
-		_ = c.conn.Close()
+		_ = c.Conn.Close()
 	}()
 
-	c.conn.SetReadLimit(maxMessageSize)
+	c.Conn.SetReadLimit(maxMessageSize)
 	// SetReadDeadline returns an error if the connection is corrupted
-	if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+	if err := c.Conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
 		return
 	}
-	c.conn.SetPongHandler(func(string) error {
-		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.Conn.SetPongHandler(func(string) error {
+		return c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
 	for {
-		msg := subscribe{}
-		err := c.conn.ReadJSON(&msg)
+		var err error
+		var msg *Subscribe
+		if c.readCallback != nil {
+			var b []byte
+			var processed bool
+			processed, b, err = c.readCallback(c, c.send)
+			// our parent read a message but didn't process it.
+			// we fall back to processing ourselves
+			if err == nil && !processed {
+				msg = &Subscribe{}
+				err = json.NewDecoder(bytes.NewReader(b)).Decode(msg)
+				if err == io.EOF {
+					// One value is expected in the message.
+					err = io.ErrUnexpectedEOF
+				}
+			}
+		} else {
+			msg = &Subscribe{}
+			err = c.Conn.ReadJSON(msg)
+		}
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				c.s.ctx.Log.Debug("Unexpected close in websockets: %s", err)
 			}
 			break
 		}
-		if msg.Unsubscribe {
-			c.s.removeChannel(c, msg.Channel)
-		} else {
-			c.s.addChannel(c, msg.Channel)
+		if msg != nil {
+			if msg.Unsubscribe {
+				c.s.removeChannel(c, msg.Channel)
+			} else {
+				c.s.addChannel(c, msg.Channel)
+			}
 		}
 	}
 }
@@ -264,31 +299,31 @@ func (c *Connection) writePump() {
 		ticker.Stop()
 		// close is called by both the writePump and the readPump so one of them
 		// will always error
-		_ = c.conn.Close()
+		_ = c.Conn.Close()
 	}()
 	for {
 		select {
 		case message, ok := <-c.send:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+			if err := c.Conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 				c.s.ctx.Log.Debug("failed to set the write deadline, closing the connection due to %s", err)
 				return
 			}
 			if !ok {
 				// The hub closed the channel. Attempt to close the connection
 				// gracefully.
-				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
-			if err := c.conn.WriteJSON(message); err != nil {
+			if err := c.Conn.WriteJSON(message); err != nil {
 				return
 			}
 		case <-ticker.C:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+			if err := c.Conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 				c.s.ctx.Log.Debug("failed to set the write deadline, closing the connection due to %s", err)
 				return
 			}
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}

@@ -27,18 +27,21 @@ func TestFilter(t *testing.T) {
 
 	pubsubfilter := &pubsubfilter{}
 	r := http.Request{}
-	r.URL = &url.URL{RawQuery: "address=" + idaddr1 + "&" +
-		"address=" + idaddr2 + ""}
-	fp := pubsubfilter.buildFilter(&r)
-	if fp == nil || len(fp.Address) != 2 {
+	r.URL = &url.URL{
+		RawQuery: ParamAddress + "=" + idaddr1 + "&" +
+			ParamAddress + "=" + idaddr2 + "",
+	}
+	fp := &FilterParam{}
+	pubsubfilter.queryToFilter(&r, fp)
+	if len(fp.Address) != 2 {
 		t.Fatalf("build filter failed")
 	}
 	ids1, _ := hex2Short(idaddr1)
-	if fp.Address[0] != ids1 {
+	if fp.Address[ids1] != 1 {
 		t.Fatalf("build filter failed %s", "0x"+idaddr1)
 	}
 	ids2, _ := hex2Short(idaddr2)
-	if fp.Address[1] != ids2 {
+	if fp.Address[ids2] != 1 {
 		t.Fatalf("build filter failed %s", idaddr2)
 	}
 }
