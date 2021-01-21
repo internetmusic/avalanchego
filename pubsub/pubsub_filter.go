@@ -91,11 +91,13 @@ func (ps *pubsubfilter) connectionCallback(conn *avalancheGoJson.Connection, cha
 	defer ps.lock.Unlock()
 
 	if add {
+		if _, exists := ps.filterParams[conn]; !exists {
+			ps.filterParams[conn] = &FilterParam{}
+		}
 		if _, exists := ps.channelMap[channel]; !exists {
 			ps.channelMap[channel] = make(map[*avalancheGoJson.Connection]struct{})
 		}
 		ps.channelMap[channel][conn] = struct{}{}
-		ps.filterParams[conn] = &FilterParam{}
 	} else {
 		if channel, exists := ps.channelMap[channel]; exists {
 			delete(channel, conn)
