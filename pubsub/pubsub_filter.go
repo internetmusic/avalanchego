@@ -149,7 +149,6 @@ func (ps *pubsubfilter) handleCommand(
 	fp *FilterParam,
 	b []byte,
 ) (bool, []byte, error) {
-	var err error
 	switch cmdMsg.Command {
 	case CommandAddressUpdate:
 		fp.lock.Lock()
@@ -172,6 +171,7 @@ func (ps *pubsubfilter) handleCommand(
 			}
 		}
 		fp.lock.Unlock()
+		return true, b, nil
 	case CommandBloomFilterAdd:
 		fp.lock.Lock()
 		// no filter exists... lets just make one up
@@ -200,6 +200,7 @@ func (ps *pubsubfilter) handleCommand(
 			}
 		}
 		fp.lock.Unlock()
+		return true, b, nil
 	case CommandFilterCreate:
 		bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
 		if err != nil {
@@ -210,6 +211,7 @@ func (ps *pubsubfilter) handleCommand(
 			errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
 			send <- errmsg
 		}
+		return true, b, nil
 	case "":
 		// default condition re-builds this message as avalancheGoJson.Subscribe
 		// and allows parent pubsub_server to handle the request
@@ -222,15 +224,12 @@ func (ps *pubsubfilter) handleCommand(
 			send <- errmsg
 			return true, b, fmt.Errorf(errmsg.Error)
 		}
-
 		return false, channelBytes, nil
 	default:
-		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", cmdMsg.Command, err)}
+		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' invalid", cmdMsg.Command)}
 		send <- errmsg
 		return true, b, fmt.Errorf(errmsg.Error)
 	}
-
-	return false, b, nil
 }
 
 func (ps *pubsubfilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
