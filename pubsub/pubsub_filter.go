@@ -29,14 +29,14 @@ func (f *FilterParam) CheckAddress(addr2check []byte) bool {
 		return true
 	}
 	for addr := range f.Address {
-		if f.compare(addr, addr2check) {
+		if compare(addr, addr2check) {
 			return true
 		}
 	}
 	return false
 }
 
-func (f *FilterParam) compare(a ids.ShortID, b []byte) bool {
+func compare(a ids.ShortID, b []byte) bool {
 	if len(b) != len(a) {
 		return false
 	}
@@ -76,10 +76,10 @@ func (f *FilterParam) UpdateAddress(address ids.ShortID, add bool, max int) erro
 }
 
 const (
-	CommandFilterCreate  = "filterCreate"
-	CommandFilterUpdate  = "FilterUpdate"
+	CommandFilterUpdate  = "filterUpdate"
 	CommandAddressUpdate = "addressUpdate"
-	ParamAddress         = "address"
+
+	ParamAddress = "address"
 
 	MaxAddresses = 10000
 )
@@ -87,12 +87,12 @@ const (
 // CommandMessage command message
 // Channel and Unsubscribe match the format of avalancheGoJson.PubSub, and will become the default pass through to underlying pubsub server
 type CommandMessage struct {
-	Command          string   `json:"command"`
-	Channel          string   `json:"channel,omitempty"`
-	AddressUpdate    [][]byte `json:"addressUpdate,omitempty"`
-	BloomFilterMax   uint64   `json:"bloomFilterMax,omitempty"`
-	BloomFilterError float64  `json:"bloomFilterError,omitempty"`
-	Unsubscribe      bool     `json:"unsubscribe,omitempty"`
+	Command       string   `json:"command"`
+	Channel       string   `json:"channel,omitempty"`
+	AddressUpdate [][]byte `json:"addressUpdate,omitempty"`
+	FilterMax     uint64   `json:"filterMax,omitempty"`
+	FilterError   float64  `json:"filterError,omitempty"`
+	Unsubscribe   bool     `json:"unsubscribe,omitempty"`
 }
 
 type errorMsg struct {
@@ -213,8 +213,6 @@ func (ps *pubsubfilter) handleCommand(
 	switch cmdMsg.Command {
 	case "":
 		return ps.handleCommandEmpty(cmdMsg, send, b)
-	case CommandFilterCreate:
-		return ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
 	case CommandFilterUpdate:
 		return ps.handleCommandFilterUpdate(cmdMsg, send, fp, b)
 	case CommandAddressUpdate:
@@ -240,31 +238,28 @@ func (ps *pubsubfilter) handleCommandEmpty(cmdMsg *CommandMessage, send chan int
 	return false, channelBytes, nil
 }
 
-func (ps *pubsubfilter) handleCommandFilterCreate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
-	bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
-	if err == nil {
-		fp.Lock.Lock()
-		fp.AddressFilter = bfilter
-		fp.Lock.Unlock()
-	} else {
-		errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
-		send <- errmsg
-	}
-	return true, b, nil
-}
-
 func (ps *pubsubfilter) handleCommandFilterUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
 	var bFilter BloomFilter
 	fp.Lock.RLock()
 	bFilter = fp.AddressFilter
 	fp.Lock.RUnlock()
 
-	// no filter exists... lets just make one up
-	if bFilter == nil {
-		cmdMsg.BloomFilterMax = 512
-		cmdMsg.BloomFilterError = .1
-		// it shouldn't fail...
-		_, _, _ = ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
+	// no filter exists..  Or they provided filter params
+	if bFilter == nil || (cmdMsg.FilterMax > 0 && cmdMsg.FilterError > 0) {
+		// filter params not specified.. set defaults
+		if !(cmdMsg.FilterMax > 0 && cmdMsg.FilterError > 0) {
+			cmdMsg.FilterMax = 1000
+			cmdMsg.FilterError = .1
+		}
+		bfilter, err := NewBloomFilter(cmdMsg.FilterMax, cmdMsg.FilterError)
+		if err == nil {
+			fp.Lock.Lock()
+			fp.AddressFilter = bfilter
+			fp.Lock.Unlock()
+		} else {
+			errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
+			send <- errmsg
+		}
 	}
 
 	fp.Lock.RLock()

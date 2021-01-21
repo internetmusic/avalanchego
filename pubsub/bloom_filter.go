@@ -1,7 +1,9 @@
 package pubsub
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -21,13 +23,16 @@ var FilterTypeWillf FilterType = 2
 var FilterTypeBtcsuite FilterType = 3
 var FilterTypeDefault = FilterTypeWillf
 
-const MaxBitSet = 1 * 1024 * 1024
+// MaxBitSet the max number of bytes
+const MaxBitSet = (1 * 1024 * 1024) * 8
 
 type BloomFilter interface {
 	// Add adds to filter, assumed thread safe
 	Add([]byte) error
 	// Check checks filter, assumed thread safe
 	Check([]byte) bool
+	MarshalJSON() ([]byte, error)
+	MarshalText() ([]byte, error)
 }
 
 func NewBloomFilter(maxN uint64, p float64) (BloomFilter, error) {
@@ -55,7 +60,8 @@ func NewWillfFilter(maxN uint64, p float64) (BloomFilter, error) {
 	// the calculation is the size of the bitset which would be created from this filter.
 	// to ensure we don't crash memory, we would ensure the size
 	// 8 == sizeof(uint64))
-	msize := WordsNeeded(m) * 8
+	wordsNeeded := WordsNeeded(m)
+	msize := wordsNeeded * 8
 	if msize > MaxBitSet {
 		return nil, fmt.Errorf("filter too large")
 	}
@@ -73,6 +79,14 @@ func (f *willfFilter) Check(b []byte) bool {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 	return f.bfilter.Test(b)
+}
+
+func (f *willfFilter) MarshalJSON() ([]byte, error) {
+	return f.bfilter.MarshalJSON()
+}
+
+func (f *willfFilter) MarshalText() ([]byte, error) {
+	return []byte(""), fmt.Errorf("unimplemented")
 }
 
 type steakKnifeFilter struct {
@@ -120,13 +134,38 @@ func (f *steakKnifeFilter) Check(b []byte) bool {
 	return f.bfilter.Contains(h)
 }
 
+func (f *steakKnifeFilter) MarshalJSON() ([]byte, error) {
+	return []byte(""), fmt.Errorf("unimplemented")
+}
+
+func (f *steakKnifeFilter) MarshalText() ([]byte, error) {
+	return f.bfilter.MarshalText()
+}
+
 type btcsuiteFilter struct {
 	lock    sync.RWMutex
 	bfilter *btcsuite.Filter
 }
 
+const Ln2Squared = math.Ln2 * math.Ln2
+
+func MinUint32(a, b uint32) uint32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func NewBtcsuiteFilter(maxN uint64, p float64) (BloomFilter, error) {
 	tweak := uint32(time.Now().UnixNano())
+
+	dataLen := uint32(-1 * float64(maxN) * math.Log(p) / Ln2Squared)
+	dataLen = MinUint32(dataLen, btcsuiteWire.MaxFilterLoadFilterSize*8) / 8
+
+	if dataLen > MaxBitSet/8 {
+		return nil, fmt.Errorf("filter too large")
+	}
+
 	bfilter := btcsuite.NewFilter(uint32(maxN), tweak, p, btcsuiteWire.BloomUpdateNone)
 	return &btcsuiteFilter{bfilter: bfilter}, nil
 }
@@ -142,6 +181,28 @@ func (f *btcsuiteFilter) Check(b []byte) bool {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 	return f.bfilter.Matches(b)
+}
+
+type MsgFilterLoadJSON struct {
+	HashFuncs uint32                       `json:"hashFuncs"`
+	Tweak     uint32                       `json:"tweak"`
+	Flags     btcsuiteWire.BloomUpdateType `json:"updateType"`
+	Filter    []byte                       `json:"filter"`
+}
+
+func (f *btcsuiteFilter) MarshalJSON() ([]byte, error) {
+	filterLoad := f.bfilter.MsgFilterLoad()
+	j := &MsgFilterLoadJSON{
+		Filter:    filterLoad.Filter,
+		HashFuncs: filterLoad.HashFuncs,
+		Tweak:     filterLoad.Tweak,
+		Flags:     filterLoad.Flags,
+	}
+	return json.Marshal(j)
+}
+
+func (f *btcsuiteFilter) MarshalText() ([]byte, error) {
+	return []byte(""), fmt.Errorf("unimplemented")
 }
 
 // the wordSize of a bit set
