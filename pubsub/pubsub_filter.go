@@ -17,9 +17,62 @@ import (
 )
 
 type FilterParam struct {
-	lock    sync.RWMutex
-	Address map[ids.ShortID]struct{}
-	BFilter BloomFilter
+	Lock          sync.RWMutex
+	Address       map[ids.ShortID]struct{}
+	AddressFilter BloomFilter
+}
+
+func (f *FilterParam) CheckAddress(addr2check []byte) bool {
+	f.Lock.RLock()
+	defer f.Lock.RUnlock()
+	if f.AddressFilter != nil && f.AddressFilter.Check(addr2check) {
+		return true
+	}
+	for addr := range f.Address {
+		if f.compare(addr, addr2check) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *FilterParam) compare(a ids.ShortID, b []byte) bool {
+	if len(b) != len(a) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if (a[i] & b[i]) != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *FilterParam) HasFilter() bool {
+	f.Lock.RLock()
+	defer f.Lock.RUnlock()
+	return f.AddressFilter != nil || len(f.Address) > 0
+}
+
+func (f *FilterParam) UpdateAddress(address ids.ShortID, add bool, max int) error {
+	switch add {
+	case true:
+		f.Lock.Lock()
+		delete(f.Address, address)
+		f.Lock.Unlock()
+	default:
+		lenAddr := 0
+		f.Lock.RLock()
+		lenAddr = len(f.Address)
+		f.Lock.RUnlock()
+		if lenAddr > max {
+			return fmt.Errorf("address update err max addresses")
+		}
+		f.Lock.Lock()
+		f.Address[address] = struct{}{}
+		f.Lock.Unlock()
+	}
+	return nil
 }
 
 const (
@@ -126,20 +179,28 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 	if err != nil {
 		return true, b, err
 	}
-
 	return ps.handleCommand(cmdMsg, send, ps.fetchFilterParam(c), b)
 }
 
 func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterParam {
-	ps.lock.RLock()
-	defer ps.lock.RUnlock()
 	var filterParamResponse *FilterParam
+	ps.lock.RLock()
 	if filterParam, ok := ps.filterParams[c]; ok {
 		filterParamResponse = filterParam
-	} else {
-		filterParamResponse = NewFilterParam()
-		ps.filterParams[c] = filterParamResponse
 	}
+	ps.lock.RUnlock()
+
+	if filterParamResponse != nil {
+		return filterParamResponse
+	}
+
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
+	if filterParam, ok := ps.filterParams[c]; ok {
+		return filterParam
+	}
+	filterParamResponse = NewFilterParam()
+	ps.filterParams[c] = filterParamResponse
 	return filterParamResponse
 }
 
@@ -150,14 +211,14 @@ func (ps *pubsubfilter) handleCommand(
 	b []byte,
 ) (bool, []byte, error) {
 	switch cmdMsg.Command {
-	case CommandAddressUpdate:
-		return ps.handleCommandAddressUpdate(cmdMsg, send, fp, b)
-	case CommandFilterUpdate:
-		return ps.handleCommandFilterUpdate(cmdMsg, send, fp, b)
-	case CommandFilterCreate:
-		return ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
 	case "":
 		return ps.handleCommandEmpty(cmdMsg, send, b)
+	case CommandFilterCreate:
+		return ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
+	case CommandFilterUpdate:
+		return ps.handleCommandFilterUpdate(cmdMsg, send, fp, b)
+	case CommandAddressUpdate:
+		return ps.handleCommandAddressUpdate(cmdMsg, send, fp, b)
 	default:
 		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' invalid", cmdMsg.Command)}
 		send <- errmsg
@@ -166,7 +227,7 @@ func (ps *pubsubfilter) handleCommand(
 }
 
 func (ps *pubsubfilter) handleCommandEmpty(cmdMsg *CommandMessage, send chan interface{}, b []byte) (bool, []byte, error) {
-	// default condition re-builds this message as avalancheGoJson.Subscribe
+	// re-build this message as avalancheGoJson.Subscribe
 	// and allows parent pubsub_server to handle the request
 	channelCommand := &avalancheGoJson.Subscribe{Channel: cmdMsg.Channel, Unsubscribe: cmdMsg.Unsubscribe}
 	channelBytes, err := json.Marshal(channelCommand)
@@ -182,9 +243,9 @@ func (ps *pubsubfilter) handleCommandEmpty(cmdMsg *CommandMessage, send chan int
 func (ps *pubsubfilter) handleCommandFilterCreate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
 	bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
 	if err == nil {
-		fp.lock.Lock()
-		fp.BFilter = bfilter
-		fp.lock.Unlock()
+		fp.Lock.Lock()
+		fp.AddressFilter = bfilter
+		fp.Lock.Unlock()
 	} else {
 		errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
 		send <- errmsg
@@ -193,31 +254,31 @@ func (ps *pubsubfilter) handleCommandFilterCreate(cmdMsg *CommandMessage, send c
 }
 
 func (ps *pubsubfilter) handleCommandFilterUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
-	hasFilter := false
-	fp.lock.Lock()
-	hasFilter = fp.BFilter != nil
-	fp.lock.Unlock()
+	var bFilter BloomFilter
+	fp.Lock.RLock()
+	bFilter = fp.AddressFilter
+	fp.Lock.RUnlock()
 
 	// no filter exists... lets just make one up
-	if !hasFilter {
+	if bFilter == nil {
 		cmdMsg.BloomFilterMax = 512
 		cmdMsg.BloomFilterError = .1
-		ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
+		// it shouldn't fail...
+		_, _, _ = ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
 	}
 
-	fp.lock.Lock()
-	defer fp.lock.Unlock()
-	switch fp.BFilter {
+	fp.Lock.RLock()
+	bFilter = fp.AddressFilter
+	fp.Lock.RUnlock()
+
+	switch bFilter {
 	case nil:
 		errmsg := &errorMsg{Error: "filter invalid"}
 		send <- errmsg
 	default:
 		for _, addr := range cmdMsg.AddressUpdate {
-			sid, err := ByteToID(addr)
-			if err != nil {
-				continue
-			}
-			err = fp.BFilter.Add(sid[:])
+			sid := ByteToID(addr)
+			err := bFilter.Add(sid[:])
 			if err != nil {
 				errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
 				send <- errmsg
@@ -228,26 +289,11 @@ func (ps *pubsubfilter) handleCommandFilterUpdate(cmdMsg *CommandMessage, send c
 }
 
 func (ps *pubsubfilter) handleCommandAddressUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
-	fp.lock.Lock()
-	defer fp.lock.Unlock()
 	for _, addr := range cmdMsg.AddressUpdate {
-		sid, err := ByteToID(addr)
+		err := fp.UpdateAddress(ByteToID(addr), cmdMsg.Unsubscribe, MaxAddresses)
 		if err != nil {
-			errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
+			errmsg := &errorMsg{Error: err.Error()}
 			send <- errmsg
-			continue
-		}
-
-		switch cmdMsg.Unsubscribe {
-		case true:
-			delete(fp.Address, *sid)
-		default:
-			if len(fp.Address) > MaxAddresses {
-				errmsg := &errorMsg{Error: "address update err max addresses"}
-				send <- errmsg
-			} else {
-				fp.Address[*sid] = struct{}{}
-			}
 		}
 	}
 	return true, b, nil
@@ -267,18 +313,13 @@ func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
 }
 
 func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) {
-	var values = r.URL.Query()
-	for valuesk := range values {
-		if valuesk != ParamAddress {
-			continue
-		}
-		for _, value := range values[valuesk] {
-			sid, err := AddressToID(value)
-			if err == nil {
-				if len(fp.Address) <= MaxAddresses {
-					fp.Address[*sid] = struct{}{}
-				}
+	for valuesk, valuesv := range r.URL.Query() {
+		switch valuesk {
+		case ParamAddress:
+			for _, value := range valuesv {
+				_ = fp.UpdateAddress(AddressToID(value), false, MaxAddresses)
 			}
+		default:
 		}
 	}
 }
@@ -286,27 +327,28 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) {
 func (ps *pubsubfilter) doPublish(channel string, msg interface{}, parser Parser) bool {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
-	if conns, exists := ps.channelMap[channel]; exists {
-		for conn := range conns {
-			if fp, exists := ps.filterParams[conn]; exists && (fp.BFilter != nil || len(fp.Address) != 0) {
-				fr := parser.Filter(fp)
-				if fr == nil {
-					continue
-				}
-				fr.Channel = channel
-				fr.Address, _ = formatting.FormatBech32(ps.hrp, fr.FilteredAddress.Bytes())
-				ps.po.PublishRaw(conn, fr)
-			} else {
-				m := &avalancheGoJson.Publish{
-					Channel: channel,
-					Value:   msg,
-				}
-				ps.po.PublishRaw(conn, m)
-			}
-		}
-		return true
+	conns, exists := ps.channelMap[channel]
+	if !exists {
+		return false
 	}
-	return false
+	for conn := range conns {
+		if fp, exists := ps.filterParams[conn]; exists && fp.HasFilter() {
+			fr := parser.Filter(fp)
+			if fr == nil {
+				continue
+			}
+			fr.Channel = channel
+			fr.Address, _ = formatting.FormatBech32(ps.hrp, fr.FilteredAddress.Bytes())
+			ps.po.PublishRaw(conn, fr)
+		} else {
+			m := &avalancheGoJson.Publish{
+				Channel: channel,
+				Value:   msg,
+			}
+			ps.po.PublishRaw(conn, m)
+		}
+	}
+	return true
 }
 
 func (ps *pubsubfilter) Publish(channel string, msg interface{}, parser Parser) {
@@ -320,26 +362,15 @@ func (ps *pubsubfilter) Register(channel string) error {
 	return ps.po.Register(channel)
 }
 
-func AddressToID(address string) (*ids.ShortID, error) {
-	addrBytes, err := hex.DecodeString(address)
-	if err != nil {
-		return nil, err
-	}
-	lshort := len(ids.ShortEmpty)
-	if len(addrBytes) != lshort {
-		return nil, fmt.Errorf("address length %d != %d", len(addrBytes), lshort)
-	}
+func AddressToID(address string) ids.ShortID {
+	addrBytes, _ := hex.DecodeString(address)
 	var sid ids.ShortID
-	copy(sid[:], addrBytes[:lshort])
-	return &sid, nil
+	copy(sid[:], addrBytes)
+	return sid
 }
 
-func ByteToID(address []byte) (*ids.ShortID, error) {
-	lshort := len(ids.ShortEmpty)
-	if len(address) != lshort {
-		return nil, fmt.Errorf("address length %d != %d", len(address), lshort)
-	}
+func ByteToID(address []byte) ids.ShortID {
 	var sid ids.ShortID
-	copy(sid[:], address[:lshort])
-	return &sid, nil
+	copy(sid[:], address)
+	return sid
 }

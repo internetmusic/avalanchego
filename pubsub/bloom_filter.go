@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/willf/bitset"
@@ -23,8 +24,10 @@ var FilterTypeDefault = FilterTypeWillf
 const MaxBitSet = 1 * 1024 * 1024
 
 type BloomFilter interface {
+	// Add adds to filter, assumed thread safe
 	Add([]byte) error
-	Check([]byte) (bool, error)
+	// Check checks filter, assumed thread safe
+	Check([]byte) bool
 }
 
 func NewBloomFilter(maxN uint64, p float64) (BloomFilter, error) {
@@ -40,6 +43,7 @@ func NewBloomFilter(maxN uint64, p float64) (BloomFilter, error) {
 }
 
 type willfFilter struct {
+	lock    sync.RWMutex
 	bfilter *willfBloom.BloomFilter
 }
 
@@ -59,14 +63,20 @@ func NewWillfFilter(maxN uint64, p float64) (BloomFilter, error) {
 }
 
 func (f *willfFilter) Add(b []byte) error {
+	f.lock.Lock()
+	defer f.lock.Unlock()
 	f.bfilter.Add(b)
 	return nil
 }
-func (f *willfFilter) Check(b []byte) (bool, error) {
-	return f.bfilter.Test(b), nil
+
+func (f *willfFilter) Check(b []byte) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	return f.bfilter.Test(b)
 }
 
 type steakKnifeFilter struct {
+	lock    sync.RWMutex
 	bfilter *streakKnife.Filter
 }
 
@@ -88,6 +98,8 @@ func NewSteakKnifeFilter(maxN uint64, p float64) (BloomFilter, error) {
 }
 
 func (f *steakKnifeFilter) Add(b []byte) error {
+	f.lock.Lock()
+	defer f.lock.Unlock()
 	h := murmur3.New64()
 	_, err := h.Write(b)
 	if err != nil {
@@ -96,16 +108,20 @@ func (f *steakKnifeFilter) Add(b []byte) error {
 	f.bfilter.Add(h)
 	return nil
 }
-func (f *steakKnifeFilter) Check(b []byte) (bool, error) {
+
+func (f *steakKnifeFilter) Check(b []byte) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
 	h := murmur3.New64()
 	_, err := h.Write(b)
 	if err != nil {
-		return false, err
+		return false
 	}
-	return f.bfilter.Contains(h), nil
+	return f.bfilter.Contains(h)
 }
 
 type btcsuiteFilter struct {
+	lock    sync.RWMutex
 	bfilter *btcsuite.Filter
 }
 
@@ -116,12 +132,16 @@ func NewBtcsuiteFilter(maxN uint64, p float64) (BloomFilter, error) {
 }
 
 func (f *btcsuiteFilter) Add(b []byte) error {
+	f.lock.Lock()
+	defer f.lock.Unlock()
 	f.bfilter.Add(b)
 	return nil
 }
 
-func (f *btcsuiteFilter) Check(b []byte) (bool, error) {
-	return f.bfilter.Matches(b), nil
+func (f *btcsuiteFilter) Check(b []byte) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	return f.bfilter.Matches(b)
 }
 
 // the wordSize of a bit set

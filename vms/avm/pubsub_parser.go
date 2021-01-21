@@ -1,7 +1,6 @@
 package avm
 
 import (
-	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/pubsub"
 	"github.com/ava-labs/avalanchego/vms/components/avax"
 )
@@ -20,23 +19,10 @@ func (p *parser) Filter(param *pubsub.FilterParam) *pubsub.FilterResponse {
 	for _, utxo := range p.tx.UTXOs() {
 		switch utxoOut := utxo.Out.(type) {
 		case avax.Addressable:
-			addresses := utxoOut.Addresses()
-			for _, address := range addresses {
-				var sid ids.ShortID
-				if len(address) != len(sid) {
-					continue
-				}
-				copy(sid[:], address)
-				if param.BFilter != nil {
-					matched, err := param.BFilter.Check(sid[:])
-					if err == nil && matched {
-						return &pubsub.FilterResponse{TxID: p.tx.ID(), FilteredAddress: sid}
-					}
-				}
-				for addr := range param.Address {
-					if compare(addr, sid) {
-						return &pubsub.FilterResponse{TxID: p.tx.ID(), FilteredAddress: sid}
-					}
+			for _, address := range utxoOut.Addresses() {
+				response := p.filterParam(param, address)
+				if response != nil {
+					return response
 				}
 			}
 		default:
@@ -45,11 +31,9 @@ func (p *parser) Filter(param *pubsub.FilterParam) *pubsub.FilterResponse {
 	return nil
 }
 
-func compare(a ids.ShortID, b ids.ShortID) bool {
-	for i := 0; i < len(a); i++ {
-		if (a[i] & b[i]) != b[i] {
-			return false
-		}
+func (p *parser) filterParam(param *pubsub.FilterParam, sid []byte) *pubsub.FilterResponse {
+	if param.CheckAddress(sid) {
+		return &pubsub.FilterResponse{TxID: p.tx.ID(), FilteredAddress: pubsub.ByteToID(sid)}
 	}
-	return true
+	return nil
 }
