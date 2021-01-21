@@ -240,7 +240,7 @@ func (ps *pubsubfilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
-	fp := &FilterParam{}
+	fp := NewFilterParam()
 	ps.queryToFilter(r, fp)
 	return fp
 }
