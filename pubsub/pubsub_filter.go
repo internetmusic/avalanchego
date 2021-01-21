@@ -23,10 +23,10 @@ type FilterParam struct {
 }
 
 const (
-	CommandFilterCreate   = "filterCreate"
-	CommandBloomFilterAdd = "bloomFilterAdd"
-	CommandAddressUpdate  = "AddressUpdate"
-	ParamAddress          = "address"
+	CommandFilterCreate  = "filterCreate"
+	CommandFilterUpdate  = "FilterUpdate"
+	CommandAddressUpdate = "addressUpdate"
+	ParamAddress         = "address"
 
 	MaxAddresses = 10000
 )
@@ -151,85 +151,106 @@ func (ps *pubsubfilter) handleCommand(
 ) (bool, []byte, error) {
 	switch cmdMsg.Command {
 	case CommandAddressUpdate:
-		fp.lock.Lock()
-		for _, addr := range cmdMsg.AddressUpdate {
-			sid, err := ByteToID(addr)
-			if err != nil {
-				errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
-				send <- errmsg
-			} else if sid != nil {
-				if cmdMsg.Unsubscribe {
-					delete(fp.Address, *sid)
-				} else {
-					if len(fp.Address) > MaxAddresses {
-						errmsg := &errorMsg{Error: "address update err max addresses"}
-						send <- errmsg
-					} else {
-						fp.Address[*sid] = struct{}{}
-					}
-				}
-			}
-		}
-		fp.lock.Unlock()
-		return true, b, nil
-	case CommandBloomFilterAdd:
-		fp.lock.Lock()
-		// no filter exists... lets just make one up
-		if fp.BFilter == nil {
-			bfilter, err := NewBloomFilter(512, .1)
-			if err == nil {
-				fp.BFilter = bfilter
-			} else {
-				errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
-				send <- errmsg
-			}
-		}
-		if fp.BFilter == nil {
-			errmsg := &errorMsg{Error: "filter invalid"}
-			send <- errmsg
-		} else {
-			for _, addr := range cmdMsg.AddressUpdate {
-				sid, err := ByteToID(addr)
-				if err == nil {
-					err = fp.BFilter.Add(sid[:])
-					if err != nil {
-						errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
-						send <- errmsg
-					}
-				}
-			}
-		}
-		fp.lock.Unlock()
-		return true, b, nil
+		return ps.handleCommandAddressUpdate(cmdMsg, send, fp, b)
+	case CommandFilterUpdate:
+		return ps.handleCommandFilterUpdate(cmdMsg, send, fp, b)
 	case CommandFilterCreate:
-		bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
-		if err == nil {
-			fp.lock.Lock()
-			fp.BFilter = bfilter
-			fp.lock.Unlock()
-		} else {
-			errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
-			send <- errmsg
-		}
-		return true, b, nil
+		return ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
 	case "":
-		// default condition re-builds this message as avalancheGoJson.Subscribe
-		// and allows parent pubsub_server to handle the request
-		channelCommand := &avalancheGoJson.Subscribe{Channel: cmdMsg.Channel, Unsubscribe: cmdMsg.Unsubscribe}
-		channelBytes, err := json.Marshal(channelCommand)
-
-		// unexpected...
-		if err != nil {
-			errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", cmdMsg.Command, err)}
-			send <- errmsg
-			return true, b, fmt.Errorf(errmsg.Error)
-		}
-		return false, channelBytes, nil
+		return ps.handleCommandEmpty(cmdMsg, send, b)
 	default:
 		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' invalid", cmdMsg.Command)}
 		send <- errmsg
 		return true, b, fmt.Errorf(errmsg.Error)
 	}
+}
+
+func (ps *pubsubfilter) handleCommandEmpty(cmdMsg *CommandMessage, send chan interface{}, b []byte) (bool, []byte, error) {
+	// default condition re-builds this message as avalancheGoJson.Subscribe
+	// and allows parent pubsub_server to handle the request
+	channelCommand := &avalancheGoJson.Subscribe{Channel: cmdMsg.Channel, Unsubscribe: cmdMsg.Unsubscribe}
+	channelBytes, err := json.Marshal(channelCommand)
+	// unexpected...
+	if err != nil {
+		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", cmdMsg.Command, err)}
+		send <- errmsg
+		return true, b, fmt.Errorf(errmsg.Error)
+	}
+	return false, channelBytes, nil
+}
+
+func (ps *pubsubfilter) handleCommandFilterCreate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
+	bfilter, err := NewBloomFilter(cmdMsg.BloomFilterMax, cmdMsg.BloomFilterError)
+	if err == nil {
+		fp.lock.Lock()
+		fp.BFilter = bfilter
+		fp.lock.Unlock()
+	} else {
+		errmsg := &errorMsg{Error: fmt.Sprintf("filter create error %v", err)}
+		send <- errmsg
+	}
+	return true, b, nil
+}
+
+func (ps *pubsubfilter) handleCommandFilterUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
+	hasFilter := false
+	fp.lock.Lock()
+	hasFilter = fp.BFilter != nil
+	fp.lock.Unlock()
+
+	// no filter exists... lets just make one up
+	if !hasFilter {
+		cmdMsg.BloomFilterMax = 512
+		cmdMsg.BloomFilterError = .1
+		ps.handleCommandFilterCreate(cmdMsg, send, fp, b)
+	}
+
+	fp.lock.Lock()
+	defer fp.lock.Unlock()
+	switch fp.BFilter {
+	case nil:
+		errmsg := &errorMsg{Error: "filter invalid"}
+		send <- errmsg
+	default:
+		for _, addr := range cmdMsg.AddressUpdate {
+			sid, err := ByteToID(addr)
+			if err != nil {
+				continue
+			}
+			err = fp.BFilter.Add(sid[:])
+			if err != nil {
+				errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
+				send <- errmsg
+			}
+		}
+	}
+	return true, b, nil
+}
+
+func (ps *pubsubfilter) handleCommandAddressUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
+	fp.lock.Lock()
+	defer fp.lock.Unlock()
+	for _, addr := range cmdMsg.AddressUpdate {
+		sid, err := ByteToID(addr)
+		if err != nil {
+			errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
+			send <- errmsg
+			continue
+		}
+
+		switch cmdMsg.Unsubscribe {
+		case true:
+			delete(fp.Address, *sid)
+		default:
+			if len(fp.Address) > MaxAddresses {
+				errmsg := &errorMsg{Error: "address update err max addresses"}
+				send <- errmsg
+			} else {
+				fp.Address[*sid] = struct{}{}
+			}
+		}
+	}
+	return true, b, nil
 }
 
 func (ps *pubsubfilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
