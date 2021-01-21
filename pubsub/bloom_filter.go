@@ -2,9 +2,10 @@ package pubsub
 
 import (
 	"fmt"
-	"github.com/willf/bitset"
 	"math"
 	"time"
+
+	"github.com/willf/bitset"
 
 	btcsuiteWire "github.com/btcsuite/btcd/wire"
 	btcsuite "github.com/btcsuite/btcutil/bloom"
@@ -122,8 +123,6 @@ func (f *btcsuiteFilter) Check(b []byte) (bool, error) {
 	return f.bfilter.Matches(b), nil
 }
 
-
-
 // the wordSize of a bit set
 const wordSize = uint(64)
 
@@ -137,7 +136,6 @@ func wordsNeeded(i uint) int {
 	return int((i + (wordSize - 1)) >> log2WordSize)
 }
 
-
 // OptimalK calculates the optimal k value for creating a new Bloom filter
 // maxn is the maximum anticipated number of elements
 func optimalK(m, maxN uint64) uint64 {
@@ -150,4 +148,3 @@ func optimalK(m, maxN uint64) uint64 {
 func optimalM(maxN uint64, p float64) uint64 {
 	return uint64(math.Ceil(-float64(maxN) * math.Log(p) / (math.Ln2 * math.Ln2)))
 }
-

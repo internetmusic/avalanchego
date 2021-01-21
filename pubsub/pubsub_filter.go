@@ -31,16 +31,15 @@ const (
 	MaxAddresses = 10000
 )
 
-// subscribe subscription message
+// commandMessage command message
 // Channel and Unsubscribe match the format of avalancheGoJson.PubSub, and will become the default pass through to underlying pubsub server
-type subscribe struct {
-	Command            string   `json:"command"`
-	Channel            string   `json:"channel"`
-	Unsubscribe        bool     `json:"unsubscribe"`
-	AddressUpdate      []string   `json:"addressUpdate"`
-	AddressUnsubscribe bool     `json:"addressUnsubscribe"`
-	BloomFilterMax     uint64   `json:"bloomFilterMax"`
-	BloomFilterError   float64  `json:"bloomFilterError"`
+type commandMessage struct {
+	Command          string   `json:"command"`
+	Channel          string   `json:"channel"`
+	AddressUpdate    [][]byte `json:"addressUpdate"`
+	BloomFilterMax   uint64   `json:"bloomFilterMax"`
+	BloomFilterError float64  `json:"bloomFilterError"`
+	Unsubscribe      bool     `json:"unsubscribe"`
 }
 
 type errorMsg struct {
@@ -116,7 +115,7 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 		return true, []byte(""), err
 	}
 	b := bb.Bytes()
-	subscribe := &subscribe{}
+	subscribe := &commandMessage{}
 	err = json.NewDecoder(bytes.NewReader(b)).Decode(subscribe)
 	if err != nil {
 		return true, b, err
@@ -139,7 +138,7 @@ func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterP
 }
 
 func (ps *pubsubfilter) handleCommand(
-	subscribe *subscribe,
+	subscribe *commandMessage,
 	send chan interface{},
 	fp *FilterParam,
 	b []byte,
@@ -149,12 +148,12 @@ func (ps *pubsubfilter) handleCommand(
 	case CommandAddressUpdate:
 		fp.lock.Lock()
 		for _, addr := range subscribe.AddressUpdate {
-			sid, err := AddressToID(addr)
+			sid, err := ByteToID(addr)
 			if err != nil {
 				errmsg := &errorMsg{Error: fmt.Sprintf("address update err %v", err)}
 				send <- errmsg
 			} else if sid != nil {
-				if subscribe.AddressUnsubscribe {
+				if subscribe.Unsubscribe {
 					delete(fp.Address, *sid)
 				} else {
 					if len(fp.Address) > MaxAddresses {
@@ -184,7 +183,7 @@ func (ps *pubsubfilter) handleCommand(
 			send <- errmsg
 		} else {
 			for _, addr := range subscribe.AddressUpdate {
-				sid, err := AddressToID(addr)
+				sid, err := ByteToID(addr)
 				if err == nil {
 					err = fp.BFilter.Add(sid[:])
 					if err != nil {
@@ -304,5 +303,15 @@ func AddressToID(address string) (*ids.ShortID, error) {
 	}
 	var sid ids.ShortID
 	copy(sid[:], addrBytes[:lshort])
+	return &sid, nil
+}
+
+func ByteToID(address []byte) (*ids.ShortID, error) {
+	lshort := len(ids.ShortEmpty)
+	if len(address) != lshort {
+		return nil, fmt.Errorf("address length %d != %d", len(address), lshort)
+	}
+	var sid ids.ShortID
+	copy(sid[:], address[:lshort])
 	return &sid, nil
 }
