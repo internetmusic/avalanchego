@@ -37,11 +37,11 @@ func TestFilter(t *testing.T) {
 		t.Fatalf("build filter failed")
 	}
 	ids1, _ := hex2Short(idaddr1)
-	if fp.Address[ids1] != 1 {
+	if fp.Address[ids1] != struct{}{} {
 		t.Fatalf("build filter failed %s", "0x"+idaddr1)
 	}
 	ids2, _ := hex2Short(idaddr2)
-	if fp.Address[ids2] != 1 {
+	if fp.Address[ids2] != struct{}{} {
 		t.Fatalf("build filter failed %s", idaddr2)
 	}
 }
