@@ -123,11 +123,7 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 		return true, b, err
 	}
 
-	fp := ps.fetchFilterParam(c)
-	if fp != nil {
-		return ps.handleCommand(cmdMsg, send, fp, b)
-	}
-	return false, b, nil
+	return ps.handleCommand(cmdMsg, send, ps.fetchFilterParam(c), b)
 }
 
 func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterParam {
