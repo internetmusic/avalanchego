@@ -31,7 +31,7 @@ func TestFilter(t *testing.T) {
 		RawQuery: ParamAddress + "=" + idaddr1 + "&" +
 			ParamAddress + "=" + idaddr2 + "",
 	}
-	fp := &FilterParam{}
+	fp := NewFilterParam()
 	pubsubfilter.queryToFilter(&r, fp)
 	if len(fp.Address) != 2 {
 		t.Fatalf("build filter failed")

@@ -86,13 +86,17 @@ func NewPubSubServerWithFilter(ctx *snow.Context) Filter {
 	return psf
 }
 
+func NewFilterParam() *FilterParam {
+	return &FilterParam{Address: make(map[ids.ShortID]struct{})}
+}
+
 func (ps *pubsubfilter) connectionCallback(conn *avalancheGoJson.Connection, channel string, add bool) {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
 	if add {
 		if _, exists := ps.filterParams[conn]; !exists {
-			ps.filterParams[conn] = &FilterParam{}
+			ps.filterParams[conn] = NewFilterParam()
 		}
 		if _, exists := ps.channelMap[channel]; !exists {
 			ps.channelMap[channel] = make(map[*avalancheGoJson.Connection]struct{})
@@ -133,7 +137,7 @@ func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterP
 	if filterParam, ok := ps.filterParams[c]; ok {
 		filterParamResponse = filterParam
 	} else {
-		filterParamResponse = &FilterParam{}
+		filterParamResponse = NewFilterParam()
 		ps.filterParams[c] = filterParamResponse
 	}
 	return filterParamResponse
