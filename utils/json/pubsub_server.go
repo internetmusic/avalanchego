@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/ava-labs/avalanchego/utils/logging"
 
-	"github.com/ava-labs/avalanchego/snow"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -52,28 +52,28 @@ var (
 
 // PubSubServer maintains the set of active clients and sends messages to the clients.
 type PubSubServer struct {
-	ctx *snow.Context
+	log logging.Logger
 
 	lock     sync.Mutex
 	conns    map[*Connection]map[string]struct{}
 	channels map[string]map[*Connection]struct{}
 
 	callbackLock       sync.RWMutex
-	readCallback       func(*Connection, chan interface{}) (bool, []byte, error)
+	readCallback       func(*Connection) (bool, []byte, error)
 	connectionCallback func(*Connection, string, bool)
 }
 
 // NewPubSubServer ...
-func NewPubSubServer(ctx *snow.Context) *PubSubServer {
+func NewPubSubServer(log logging.Logger) *PubSubServer {
 	return &PubSubServer{
-		ctx:      ctx,
+		log:      log,
 		conns:    make(map[*Connection]map[string]struct{}),
 		channels: make(map[string]map[*Connection]struct{}),
 	}
 }
 
 func (s *PubSubServer) SetReadCallback(
-	readCallback func(*Connection, chan interface{}) (bool, []byte, error),
+	readCallback func(*Connection) (bool, []byte, error),
 	connectionCallback func(*Connection, string, bool),
 ) {
 	s.callbackLock.Lock()
@@ -85,7 +85,7 @@ func (s *PubSubServer) SetReadCallback(
 func (s *PubSubServer) ServeHTTP(w http.ResponseWriter, r *http.Request) *Connection {
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.ctx.Log.Debug("Failed to upgrade %s", err)
+		s.log.Debug("Failed to upgrade %s", err)
 		return nil
 	}
 	conn := &Connection{s: s, conn: wsConn, send: make(chan interface{}, maxPendingMessages), readCallback: s.readCallback}
@@ -100,7 +100,7 @@ func (s *PubSubServer) Publish(channel string, msg interface{}) {
 
 	conns, exists := s.channels[channel]
 	if !exists {
-		s.ctx.Log.Warn("attempted to publush to an unknown channel %s", channel)
+		s.log.Warn("attempted to publush to an unknown channel %s", channel)
 		return
 	}
 
@@ -110,20 +110,16 @@ func (s *PubSubServer) Publish(channel string, msg interface{}) {
 	}
 
 	for conn := range conns {
-		select {
-		case conn.send <- pubMsg:
-		default:
-			s.ctx.Log.Verbo("dropping message to subscribed connection due to too many pending messages")
+		if !conn.Send(pubMsg) {
+			s.log.Verbo("dropping message to subscribed connection due to too many pending messages")
 		}
 	}
 }
 
 // Publish ...
 func (s *PubSubServer) PublishRaw(conn *Connection, msg interface{}) {
-	select {
-	case conn.send <- msg:
-	default:
-		s.ctx.Log.Verbo("dropping message to subscribed connection due to too many pending messages")
+	if !conn.Send(msg) {
+		s.log.Verbo("dropping message to subscribed connection due to too many pending messages")
 	}
 }
 
@@ -155,7 +151,7 @@ func (s *PubSubServer) removeConnection(conn *Connection) {
 
 	channels, exists := s.conns[conn]
 	if !exists {
-		s.ctx.Log.Warn("attempted to remove an unknown connection")
+		s.log.Warn("attempted to remove an unknown connection")
 		return
 	}
 
@@ -229,11 +225,29 @@ type Connection struct {
 	send chan interface{}
 
 	// readCallback parent reader overrideF
-	readCallback func(*Connection, chan interface{}) (bool, []byte, error)
+	readCallback func(*Connection) (bool, []byte, error)
 }
 
-func (c *Connection) NextReader() (int, io.Reader, error) {
-	return c.conn.NextReader()
+func (c *Connection) Send(msg interface{}) bool {
+	select {
+	case c.send <- msg:
+		return true
+	default:
+	}
+	return false
+}
+
+func (c *Connection) NextMessage() ([]byte, error) {
+	var bb bytes.Buffer
+	_, r, err := c.conn.NextReader()
+	if err != nil {
+		return nil, err
+	}
+	_, err = bb.ReadFrom(r)
+	if err != nil {
+		return nil, err
+	}
+	return bb.Bytes(), nil
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -264,7 +278,7 @@ func (c *Connection) readPump() {
 		if c.readCallback != nil {
 			var b []byte
 			var processed bool
-			processed, b, err = c.readCallback(c, c.send)
+			processed, b, err = c.readCallback(c)
 			// our parent read a message but didn't process it.
 			// we fall back to processing ourselves
 			if err == nil && !processed {
@@ -281,7 +295,7 @@ func (c *Connection) readPump() {
 		}
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.s.ctx.Log.Debug("Unexpected close in websockets: %s", err)
+				c.s.log.Debug("Unexpected close in websockets: %s", err)
 			}
 			break
 		}
@@ -312,7 +326,7 @@ func (c *Connection) writePump() {
 		select {
 		case message, ok := <-c.send:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-				c.s.ctx.Log.Debug("failed to set the write deadline, closing the connection due to %s", err)
+				c.s.log.Debug("failed to set the write deadline, closing the connection due to %s", err)
 				return
 			}
 			if !ok {
@@ -327,7 +341,7 @@ func (c *Connection) writePump() {
 			}
 		case <-ticker.C:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
-				c.s.ctx.Log.Debug("failed to set the write deadline, closing the connection due to %s", err)
+				c.s.log.Debug("failed to set the write deadline, closing the connection due to %s", err)
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {

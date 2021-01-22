@@ -190,12 +190,13 @@ func TestCommandMessage(t *testing.T) {
 
 func TestFuncCommandEmpty(t *testing.T) {
 	psf := &pubsubfilter{}
-	send := make(chan interface{}, 100)
 	cmdMsg := &CommandMessage{}
 	cmdMsg.Channel = "testchannel"
 	cmdMsg.Unsubscribe = true
 	bin := []byte("testbytes")
-	res, bout, err := psf.handleCommandEmpty(cmdMsg, send, bin)
+	sendMsg := func(msg interface{}) {
+	}
+	res, bout, err := psf.handleCommandEmpty(sendMsg, cmdMsg, bin)
 	if err != nil {
 		t.Fatalf("handle command empty failed")
 	}

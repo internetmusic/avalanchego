@@ -134,7 +134,7 @@ func (vm *VM) Initialize(
 	vm.Aliaser.Initialize()
 	vm.assetToFxCache = &cache.LRU{Size: assetToFxCacheSize}
 
-	vm.pubsub = pubsub.NewPubSubServerWithFilter(ctx)
+	vm.pubsub = pubsub.NewPubSubServerWithFilter(ctx.NetworkID, ctx.Log)
 
 	genesisCodec := linearcodec.New(reflectcodec.DefaultTagName, 1<<20)
 	c := linearcodec.NewDefault()

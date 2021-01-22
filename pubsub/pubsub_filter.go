@@ -9,8 +9,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ava-labs/avalanchego/utils/logging"
+
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/avalanchego/snow"
 	"github.com/ava-labs/avalanchego/utils/bloom"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/formatting"
@@ -188,9 +189,9 @@ type pubsubfilter struct {
 	channelMap   map[string]map[*avalancheGoJson.Connection]struct{}
 }
 
-func NewPubSubServerWithFilter(ctx *snow.Context) Filter {
-	hrp := constants.GetHRP(ctx.NetworkID)
-	po := avalancheGoJson.NewPubSubServer(ctx)
+func NewPubSubServerWithFilter(networkID uint32, log logging.Logger) Filter {
+	hrp := constants.GetHRP(networkID)
+	po := avalancheGoJson.NewPubSubServer(log)
 	psf := &pubsubfilter{
 		hrp:          hrp,
 		po:           po,
@@ -222,24 +223,45 @@ func (ps *pubsubfilter) connectionCallback(conn *avalancheGoJson.Connection, cha
 	}
 }
 
-func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan interface{}) (bool, []byte, error) {
-	var bb bytes.Buffer
-	_, r, err := c.NextReader()
-	if err != nil {
-		return true, []byte(""), err
-	}
-	_, err = bb.ReadFrom(r)
-	if err != nil {
-		return true, []byte(""), err
-	}
-	b := bb.Bytes()
+func (ps *pubsubfilter) decodeCommandMsg(b []byte) (*CommandMessage, error) {
 	cmdMsg := &CommandMessage{}
-	err = json.NewDecoder(bytes.NewReader(b)).Decode(cmdMsg)
+	err := json.NewDecoder(bytes.NewReader(b)).Decode(cmdMsg)
+	if err != nil {
+		return nil, err
+	}
+	cmdMsg.TransposeAddress(ps.hrp)
+	return cmdMsg, nil
+}
+
+func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection) (bool, []byte, error) {
+	b, err := c.NextMessage()
 	if err != nil {
 		return true, b, err
 	}
-	cmdMsg.TransposeAddress(ps.hrp)
-	return ps.handleCommand(cmdMsg, send, ps.fetchFilterParam(c), b)
+	cmdMsg, err := ps.decodeCommandMsg(b)
+	if err != nil {
+		return true, b, err
+	}
+	sendMsg := func(msg interface{}) {
+		if c == nil {
+			return
+		}
+		_ = c.Send(msg)
+	}
+	switch cmdMsg.Command {
+	case "":
+		return ps.handleCommandEmpty(sendMsg, cmdMsg, b)
+	case CommandFilterUpdate:
+		fp := ps.fetchFilterParam(c)
+		return ps.handleCommandFilterUpdate(sendMsg, cmdMsg, fp, b)
+	case CommandAddressUpdate:
+		fp := ps.fetchFilterParam(c)
+		return ps.handleCommandAddressUpdate(sendMsg, cmdMsg, fp, b)
+	default:
+		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' invalid", cmdMsg.Command)}
+		sendMsg(errmsg)
+		return true, b, fmt.Errorf(errmsg.Error)
+	}
 }
 
 func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterParam {
@@ -264,45 +286,23 @@ func (ps *pubsubfilter) fetchFilterParam(c *avalancheGoJson.Connection) *FilterP
 	return filterParamResponse
 }
 
-func (ps *pubsubfilter) handleCommand(
-	cmdMsg *CommandMessage,
-	send chan interface{},
-	fp *FilterParam,
-	b []byte,
-) (bool, []byte, error) {
-	switch cmdMsg.Command {
-	case "":
-		return ps.handleCommandEmpty(cmdMsg, send, b)
-	case CommandFilterUpdate:
-		return ps.handleCommandFilterUpdate(cmdMsg, send, fp, b)
-	case CommandAddressUpdate:
-		return ps.handleCommandAddressUpdate(cmdMsg, send, fp, b)
-	default:
-		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' invalid", cmdMsg.Command)}
-		send <- errmsg
-		return true, b, fmt.Errorf(errmsg.Error)
-	}
-}
-
-func (ps *pubsubfilter) handleCommandEmpty(cmdMsg *CommandMessage, send chan interface{}, b []byte) (bool, []byte, error) {
+func (ps *pubsubfilter) handleCommandEmpty(sendMsg func(msg interface{}), cmdMsg *CommandMessage, b []byte) (bool, []byte, error) {
 	// re-build this message as avalancheGoJson.Subscribe
 	// and allows parent pubsub_server to handle the request
 	channelBytes, err := json.Marshal(&cmdMsg.Subscribe)
 	// unexpected...
 	if err != nil {
-		errmsg := &errorMsg{Error: fmt.Sprintf("command '%s' err %v", cmdMsg.Command, err)}
-		send <- errmsg
-		return true, b, fmt.Errorf(errmsg.Error)
+		sendMsg(&errorMsg{Error: fmt.Sprintf("err %v", err)})
+		return true, b, err
 	}
 	return false, channelBytes, nil
 }
 
-func (ps *pubsubfilter) handleCommandFilterUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
+func (ps *pubsubfilter) handleCommandFilterUpdate(sendMsg func(msg interface{}), cmdMsg *CommandMessage, fp *FilterParam, b []byte) (bool, []byte, error) {
 	bfilter, err := ps.updateNewFilter(cmdMsg, fp)
 	if err != nil {
-		errmsg := &errorMsg{Error: fmt.Sprintf("filter create failed %v", err)}
-		send <- errmsg
-		return true, b, nil
+		sendMsg(&errorMsg{Error: fmt.Sprintf("filter create failed %v", err)})
+		return true, b, err
 	}
 	bfilter.Add(cmdMsg.AddressUpdate...)
 	return true, b, nil
@@ -323,11 +323,10 @@ func (ps *pubsubfilter) updateNewFilter(cmdMsg *CommandMessage, fp *FilterParam)
 	return bfilter, nil
 }
 
-func (ps *pubsubfilter) handleCommandAddressUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
+func (ps *pubsubfilter) handleCommandAddressUpdate(sendMsg func(msg interface{}), cmdMsg *CommandMessage, fp *FilterParam, b []byte) (bool, []byte, error) {
 	err := fp.UpdateAddressMulti(cmdMsg.Unsubscribe, MaxAddresses, cmdMsg.AddressUpdate...)
-	if err != nil && send != nil {
-		errmsg := &errorMsg{Error: err.Error()}
-		send <- errmsg
+	if err != nil {
+		sendMsg(&errorMsg{Error: fmt.Sprintf("address update failed %v", err)})
 	}
 	return true, b, nil
 }
@@ -373,7 +372,7 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 		}
 	}
 	cmdMsg.TransposeAddress(ps.hrp)
-	_, _, _ = ps.handleCommandAddressUpdate(cmdMsg, nil, fp, []byte(""))
+	_, _, _ = ps.handleCommandAddressUpdate(nil, cmdMsg, fp, []byte(""))
 	return fp
 }
 
