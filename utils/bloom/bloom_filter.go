@@ -1,9 +1,14 @@
-package pubsub
+package bloom
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,28 +28,24 @@ var FilterTypeWillf FilterType = 2
 var FilterTypeBtcsuite FilterType = 3
 var FilterTypeDefault = FilterTypeWillf
 
-// MaxBitSet the max number of bytes
-const MaxBitSet = (1 * 1024 * 1024) * 8
-
-type BloomFilter interface {
+type Filter interface {
 	// Add adds to filter, assumed thread safe
 	Add([]byte) error
 	// Check checks filter, assumed thread safe
 	Check([]byte) bool
 	MarshalJSON() ([]byte, error)
-	MarshalText() ([]byte, error)
 }
 
-func NewBloomFilter(maxN uint64, p float64) (BloomFilter, error) {
+func New(maxN uint64, p float64, maxBits uint64) (Filter, error) {
 	switch FilterTypeDefault {
 	case FilterTypeSteakKnife:
-		return NewSteakKnifeFilter(maxN, p)
+		return NewSteakKnifeFilter(maxN, p, maxBits)
 	case FilterTypeWillf:
-		return NewWillfFilter(maxN, p)
+		return NewWillfFilter(maxN, p, maxBits)
 	case FilterTypeBtcsuite:
-		return NewBtcsuiteFilter(maxN, p)
+		return NewBtcsuiteFilter(maxN, p, maxBits)
 	}
-	return NewWillfFilter(maxN, p)
+	return NewWillfFilter(maxN, p, maxBits)
 }
 
 type willfFilter struct {
@@ -52,7 +53,7 @@ type willfFilter struct {
 	bfilter *willfBloom.BloomFilter
 }
 
-func NewWillfFilter(maxN uint64, p float64) (BloomFilter, error) {
+func NewWillfFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
 	m := uint(streakKnife.OptimalM(maxN, p))
 	k := uint(streakKnife.OptimalK(uint64(m), maxN))
 
@@ -62,7 +63,7 @@ func NewWillfFilter(maxN uint64, p float64) (BloomFilter, error) {
 	// 8 == sizeof(uint64))
 	wordsNeeded := WordsNeeded(m)
 	msize := wordsNeeded * 8
-	if msize > MaxBitSet {
+	if uint64(msize) > maxBits {
 		return nil, fmt.Errorf("filter too large")
 	}
 	return &willfFilter{bfilter: willfBloom.New(m, k)}, nil
@@ -85,16 +86,12 @@ func (f *willfFilter) MarshalJSON() ([]byte, error) {
 	return f.bfilter.MarshalJSON()
 }
 
-func (f *willfFilter) MarshalText() ([]byte, error) {
-	return []byte(""), fmt.Errorf("unimplemented")
-}
-
 type steakKnifeFilter struct {
 	lock    sync.RWMutex
 	bfilter *streakKnife.Filter
 }
 
-func NewSteakKnifeFilter(maxN uint64, p float64) (BloomFilter, error) {
+func NewSteakKnifeFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
 	m := streakKnife.OptimalM(maxN, p)
 	k := streakKnife.OptimalK(m, maxN)
 
@@ -104,7 +101,7 @@ func NewSteakKnifeFilter(maxN uint64, p float64) (BloomFilter, error) {
 	// 8 == sizeof(uint64))
 	msize := ((m + 63) / 64) * 8
 	msize += k * 8
-	if msize > MaxBitSet {
+	if msize > maxBits {
 		return nil, fmt.Errorf("filter too large")
 	}
 	bfilter, err := streakKnife.New(m, k)
@@ -134,12 +131,115 @@ func (f *steakKnifeFilter) Check(b []byte) bool {
 	return f.bfilter.Contains(h)
 }
 
-func (f *steakKnifeFilter) MarshalJSON() ([]byte, error) {
-	return []byte(""), fmt.Errorf("unimplemented")
+type SteakKnifeJSON struct {
+	K    uint64   `json:"k"`
+	N    uint64   `json:"n"`
+	M    uint64   `json:"m"`
+	Keys []uint64 `json:"keys"`
+	Bits []uint64 `json:"bits"`
 }
 
-func (f *steakKnifeFilter) MarshalText() ([]byte, error) {
-	return f.bfilter.MarshalText()
+func parseSteakKnifeText(byts []byte) (*SteakKnifeJSON, error) {
+	/*
+		k
+		4
+		n
+		0
+		m
+		48
+		keys
+		0000000000000000
+		0000000000000001
+		0000000000000002
+		0000000000000003
+		bits
+		0000000000000000
+		sha384
+		000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f
+	*/
+	res := &SteakKnifeJSON{}
+	scanner := bufio.NewScanner(bytes.NewReader(byts))
+	scanner.Buffer(make([]byte, 10e8), 10e8)
+	var b string
+	if scanner.Scan() {
+		b = string(scanner.Bytes())
+		if b != "k" {
+			return nil, fmt.Errorf("expect k")
+		}
+		if scanner.Scan() {
+			b = string(scanner.Bytes())
+			res.K, _ = strconv.ParseUint(b, 10, 64)
+		}
+	}
+	if scanner.Scan() {
+		b = string(scanner.Bytes())
+		if b != "n" {
+			return nil, fmt.Errorf("expect m")
+		}
+		if scanner.Scan() {
+			b = string(scanner.Bytes())
+			res.N, _ = strconv.ParseUint(b, 10, 64)
+		}
+	}
+	if scanner.Scan() {
+		b = string(scanner.Bytes())
+		if b != "m" {
+			return nil, fmt.Errorf("expect m")
+		}
+		if scanner.Scan() {
+			b = string(scanner.Bytes())
+			res.M, _ = strconv.ParseUint(b, 10, 64)
+		}
+	}
+	if scanner.Scan() {
+		b = string(scanner.Bytes())
+		if b != "keys" {
+			return nil, fmt.Errorf("expect keys")
+		}
+		for scanner.Scan() {
+			b = string(scanner.Bytes())
+			if b == "bits" {
+				break
+			}
+			hbits, _ := hex.DecodeString(b)
+			if len(hbits) != 8 {
+				return nil, fmt.Errorf("invalid hkeys sz")
+			}
+			num := binary.BigEndian.Uint64(hbits)
+			res.Keys = append(res.Keys, num)
+		}
+	}
+	if b != "bits" {
+		return nil, fmt.Errorf("expect bits")
+	}
+	for scanner.Scan() {
+		b = string(scanner.Bytes())
+		if b == "sha384" {
+			break
+		}
+		hbits, _ := hex.DecodeString(b)
+		if len(hbits) != 8 {
+			return nil, fmt.Errorf("invalid hbits sz")
+		}
+		num := binary.BigEndian.Uint64(hbits)
+		res.Bits = append(res.Bits, num)
+	}
+	if b != "sha384" {
+		return nil, fmt.Errorf("expect sha384")
+	}
+	return res, nil
+}
+
+func (f *steakKnifeFilter) MarshalJSON() ([]byte, error) {
+	bits, err := f.bfilter.MarshalText()
+	if err != nil {
+		return nil, err
+	}
+	j, err := parseSteakKnifeText(bits)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(j)
 }
 
 type btcsuiteFilter struct {
@@ -147,22 +247,13 @@ type btcsuiteFilter struct {
 	bfilter *btcsuite.Filter
 }
 
-const Ln2Squared = math.Ln2 * math.Ln2
-
-func MinUint32(a, b uint32) uint32 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func NewBtcsuiteFilter(maxN uint64, p float64) (BloomFilter, error) {
+func NewBtcsuiteFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
 	tweak := uint32(time.Now().UnixNano())
 
 	dataLen := uint32(-1 * float64(maxN) * math.Log(p) / Ln2Squared)
 	dataLen = MinUint32(dataLen, btcsuiteWire.MaxFilterLoadFilterSize*8) / 8
 
-	if dataLen > MaxBitSet/8 {
+	if uint64(dataLen) > maxBits/8 {
 		return nil, fmt.Errorf("filter too large")
 	}
 
@@ -201,10 +292,6 @@ func (f *btcsuiteFilter) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j)
 }
 
-func (f *btcsuiteFilter) MarshalText() ([]byte, error) {
-	return []byte(""), fmt.Errorf("unimplemented")
-}
-
 // the wordSize of a bit set
 const wordSize = uint(64)
 
@@ -216,4 +303,13 @@ func WordsNeeded(i uint) int {
 		return int(bitset.Cap() >> log2WordSize)
 	}
 	return int((i + (wordSize - 1)) >> log2WordSize)
+}
+
+const Ln2Squared = math.Ln2 * math.Ln2
+
+func MinUint32(a, b uint32) uint32 {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -8,27 +8,42 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/ava-labs/avalanchego/utils/constants"
-	"github.com/ava-labs/avalanchego/utils/formatting"
-
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow"
+	"github.com/ava-labs/avalanchego/utils/bloom"
+	"github.com/ava-labs/avalanchego/utils/constants"
+	"github.com/ava-labs/avalanchego/utils/formatting"
 	avalancheGoJson "github.com/ava-labs/avalanchego/utils/json"
 )
 
+// MaxBitSet the max number of bytes
+const MaxBitSet = (1 * 1024 * 1024) * 8
+
 type FilterParam struct {
-	Lock          sync.RWMutex
-	Address       map[ids.ShortID]struct{}
-	AddressFilter BloomFilter
+	lock          sync.RWMutex
+	address       map[ids.ShortID]struct{}
+	addressFilter bloom.Filter
+}
+
+func (f *FilterParam) AddressFiter() bloom.Filter {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	return f.addressFilter
+}
+
+func (f *FilterParam) SetAddressFilter(filter bloom.Filter) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	f.addressFilter = filter
 }
 
 func (f *FilterParam) CheckAddress(addr2check []byte) bool {
-	f.Lock.RLock()
-	defer f.Lock.RUnlock()
-	if f.AddressFilter != nil && f.AddressFilter.Check(addr2check) {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	if f.addressFilter != nil && f.addressFilter.Check(addr2check) {
 		return true
 	}
-	for addr := range f.Address {
+	for addr := range f.address {
 		if compare(addr, addr2check) {
 			return true
 		}
@@ -49,30 +64,34 @@ func compare(a ids.ShortID, b []byte) bool {
 }
 
 func (f *FilterParam) HasFilter() bool {
-	f.Lock.RLock()
-	defer f.Lock.RUnlock()
-	return f.AddressFilter != nil || len(f.Address) > 0
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	return f.addressFilter != nil || len(f.address) > 0
 }
 
-func (f *FilterParam) UpdateAddress(address ids.ShortID, add bool, max int) error {
-	switch add {
+func (f *FilterParam) UpdateAddress(address ids.ShortID, unsubscribe bool, max int) error {
+	switch unsubscribe {
 	case true:
-		f.Lock.Lock()
-		delete(f.Address, address)
-		f.Lock.Unlock()
+		f.lock.Lock()
+		delete(f.address, address)
+		f.lock.Unlock()
 	default:
 		lenAddr := 0
-		f.Lock.RLock()
-		lenAddr = len(f.Address)
-		f.Lock.RUnlock()
+		f.lock.RLock()
+		lenAddr = len(f.address)
+		f.lock.RUnlock()
 		if lenAddr > max {
 			return fmt.Errorf("address update err max addresses")
 		}
-		f.Lock.Lock()
-		f.Address[address] = struct{}{}
-		f.Lock.Unlock()
+		f.lock.Lock()
+		f.address[address] = struct{}{}
+		f.lock.Unlock()
 	}
 	return nil
+}
+
+func NewFilterParam() *FilterParam {
+	return &FilterParam{address: make(map[ids.ShortID]struct{})}
 }
 
 const (
@@ -137,10 +156,6 @@ func NewPubSubServerWithFilter(ctx *snow.Context) Filter {
 	// inject our callbacks..
 	po.SetReadCallback(psf.readCallback, psf.connectionCallback)
 	return psf
-}
-
-func NewFilterParam() *FilterParam {
-	return &FilterParam{Address: make(map[ids.ShortID]struct{})}
 }
 
 func (ps *pubsubfilter) connectionCallback(conn *avalancheGoJson.Connection, channel string, add bool) {
@@ -239,41 +254,34 @@ func (ps *pubsubfilter) handleCommandEmpty(cmdMsg *CommandMessage, send chan int
 }
 
 func (ps *pubsubfilter) handleCommandFilterUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
-	var bFilter BloomFilter
-	fp.Lock.RLock()
-	bFilter = fp.AddressFilter
-	fp.Lock.RUnlock()
+	bfilter := fp.AddressFiter()
 
 	// no filter exists..  Or they provided filter params
-	if bFilter == nil || (cmdMsg.FilterMax > 0 && cmdMsg.FilterError > 0) {
+	if bfilter == nil || (cmdMsg.FilterMax > 0 && cmdMsg.FilterError > 0) {
 		// filter params not specified.. set defaults
 		if !(cmdMsg.FilterMax > 0 && cmdMsg.FilterError > 0) {
 			cmdMsg.FilterMax = 1000
 			cmdMsg.FilterError = .1
 		}
-		bfilter, err := NewBloomFilter(cmdMsg.FilterMax, cmdMsg.FilterError)
+		bfilter, err := bloom.New(cmdMsg.FilterMax, cmdMsg.FilterError, MaxBitSet)
 		if err == nil {
-			fp.Lock.Lock()
-			fp.AddressFilter = bfilter
-			fp.Lock.Unlock()
+			fp.SetAddressFilter(bfilter)
 		} else {
 			errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
 			send <- errmsg
 		}
 	}
 
-	fp.Lock.RLock()
-	bFilter = fp.AddressFilter
-	fp.Lock.RUnlock()
+	bfilter = fp.AddressFiter()
 
-	switch bFilter {
+	switch bfilter {
 	case nil:
 		errmsg := &errorMsg{Error: "filter invalid"}
 		send <- errmsg
 	default:
 		for _, addr := range cmdMsg.AddressUpdate {
 			sid := ByteToID(addr)
-			err := bFilter.Add(sid[:])
+			err := bfilter.Add(sid[:])
 			if err != nil {
 				errmsg := &errorMsg{Error: fmt.Sprintf("filter add error %v", err)}
 				send <- errmsg
@@ -302,12 +310,10 @@ func (ps *pubsubfilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
-	fp := NewFilterParam()
-	ps.queryToFilter(r, fp)
-	return fp
+	return ps.queryToFilter(r, NewFilterParam())
 }
 
-func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) {
+func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterParam {
 	for valuesk, valuesv := range r.URL.Query() {
 		switch valuesk {
 		case ParamAddress:
@@ -317,6 +323,7 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) {
 		default:
 		}
 	}
+	return fp
 }
 
 func (ps *pubsubfilter) doPublish(channel string, msg interface{}, parser Parser) bool {

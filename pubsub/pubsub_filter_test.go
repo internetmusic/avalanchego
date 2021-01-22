@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/ava-labs/avalanchego/utils/bloom"
+
 	"github.com/ava-labs/avalanchego/ids"
 )
 
@@ -31,17 +33,16 @@ func TestFilter(t *testing.T) {
 		RawQuery: ParamAddress + "=" + idaddr1 + "&" +
 			ParamAddress + "=" + idaddr2 + "",
 	}
-	fp := NewFilterParam()
-	pubsubfilter.queryToFilter(&r, fp)
-	if len(fp.Address) != 2 {
+	fp := pubsubfilter.buildFilter(&r)
+	if len(fp.address) != 2 {
 		t.Fatalf("build filter failed")
 	}
 	ids1, _ := hex2Short(idaddr1)
-	if fp.Address[ids1] != struct{}{} {
+	if fp.address[ids1] != struct{}{} {
 		t.Fatalf("build filter failed %s", "0x"+idaddr1)
 	}
 	ids2, _ := hex2Short(idaddr2)
-	if fp.Address[ids2] != struct{}{} {
+	if fp.address[ids2] != struct{}{} {
 		t.Fatalf("build filter failed %s", idaddr2)
 	}
 }
@@ -72,5 +73,55 @@ func TestCompare(t *testing.T) {
 
 	if !compare(idsid1, idsid4[:]) {
 		t.Fatalf("filter failed")
+	}
+}
+
+func TestFilterParam(t *testing.T) {
+	mockFilter := bloom.NewMock()
+
+	fp := NewFilterParam()
+	fp.addressFilter = mockFilter
+
+	if !fp.HasFilter() {
+		t.Fatalf("has filter failed")
+	}
+
+	idsv := ids.GenerateTestShortID()
+	fp.address[idsv] = struct{}{}
+	if !fp.CheckAddress(idsv[:]) {
+		t.Fatalf("check address failed")
+	}
+	delete(fp.address, idsv)
+
+	_ = mockFilter.Add([]byte("hello"))
+	if !fp.CheckAddress([]byte("hello")) {
+		t.Fatalf("check address failed")
+	}
+	if fp.CheckAddress([]byte("bye")) {
+		t.Fatalf("check address failed")
+	}
+	idsv = ids.GenerateTestShortID()
+	if fp.UpdateAddress(idsv, false, 10) != nil {
+		t.Fatalf("update address failed")
+	}
+	if len(fp.address) != 1 {
+		t.Fatalf("update address failed")
+	}
+	if fp.UpdateAddress(idsv, true, 10) != nil {
+		t.Fatalf("update address failed")
+	}
+	if len(fp.address) != 0 {
+		t.Fatalf("update address failed")
+	}
+
+	for i := 0; i < 11; i++ {
+		idsv := ids.GenerateTestShortID()
+		if fp.UpdateAddress(idsv, false, 10) != nil {
+			t.Fatalf("update address failed")
+		}
+	}
+	idsv = ids.GenerateTestShortID()
+	if fp.UpdateAddress(idsv, false, 10) == nil {
+		t.Fatalf("update address failed")
 	}
 }
