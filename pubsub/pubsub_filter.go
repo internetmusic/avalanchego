@@ -108,8 +108,8 @@ func NewFilterParam() *FilterParam {
 }
 
 const (
-	CommandFilterUpdate  = "filterUpdate"
-	CommandAddressUpdate = "addressUpdate"
+	CommandFilters   = "filters"
+	CommandAddresses = "addresses"
 
 	ParamAddress = "address"
 
@@ -121,10 +121,10 @@ const (
 
 // CommandMessage command message
 type CommandMessage struct {
-	Command       string   `json:"command"`
-	AddressUpdate [][]byte `json:"addressUpdate,omitempty"`
-	FilterMax     uint64   `json:"filterMax,omitempty"`
-	FilterError   float64  `json:"filterError,omitempty"`
+	Command     string   `json:"command"`
+	Addresses   [][]byte `json:"addresses,omitempty"`
+	FilterMax   uint64   `json:"filterMax,omitempty"`
+	FilterError float64  `json:"filterError,omitempty"`
 	avalancheGoJson.Subscribe
 }
 
@@ -142,7 +142,7 @@ func (c *CommandMessage) FilterOrDefault() {
 
 // TransposeAddress converts any b32 address to their byte equiv ids.ShortID.
 func (c *CommandMessage) TransposeAddress(hrp string) {
-	for icnt, a := range c.AddressUpdate {
+	for icnt, a := range c.Addresses {
 		astr := string(a)
 		// remove chain prefix if found..  X-fuji....
 		addressParts := strings.SplitN(astr, "-", 2)
@@ -154,7 +154,7 @@ func (c *CommandMessage) TransposeAddress(hrp string) {
 			if err != nil {
 				continue
 			}
-			c.AddressUpdate[icnt] = abytes
+			c.Addresses[icnt] = abytes
 		}
 	}
 }
@@ -251,10 +251,10 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection) (bool, []byt
 	switch cmdMsg.Command {
 	case "":
 		return ps.handleCommandEmpty(sendMsg, cmdMsg, b)
-	case CommandFilterUpdate:
+	case CommandFilters:
 		fp := ps.fetchFilterParam(c)
 		return ps.handleCommandFilterUpdate(sendMsg, cmdMsg, fp, b)
-	case CommandAddressUpdate:
+	case CommandAddresses:
 		fp := ps.fetchFilterParam(c)
 		return ps.handleCommandAddressUpdate(sendMsg, cmdMsg, fp, b)
 	default:
@@ -304,7 +304,7 @@ func (ps *pubsubfilter) handleCommandFilterUpdate(sendMsg func(msg interface{}),
 		sendMsg(&errorMsg{Error: fmt.Sprintf("filter create failed %v", err)})
 		return true, b, err
 	}
-	bfilter.Add(cmdMsg.AddressUpdate...)
+	bfilter.Add(cmdMsg.Addresses...)
 	return true, b, nil
 }
 
@@ -324,7 +324,7 @@ func (ps *pubsubfilter) updateNewFilter(cmdMsg *CommandMessage, fp *FilterParam)
 }
 
 func (ps *pubsubfilter) handleCommandAddressUpdate(sendMsg func(msg interface{}), cmdMsg *CommandMessage, fp *FilterParam, b []byte) (bool, []byte, error) {
-	err := fp.UpdateAddressMulti(cmdMsg.Unsubscribe, MaxAddresses, cmdMsg.AddressUpdate...)
+	err := fp.UpdateAddressMulti(cmdMsg.Unsubscribe, MaxAddresses, cmdMsg.Addresses...)
 	if err != nil {
 		sendMsg(&errorMsg{Error: fmt.Sprintf("address update failed %v", err)})
 	}
@@ -344,7 +344,7 @@ func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
 
 func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterParam {
 	cmdMsg := &CommandMessage{}
-	cmdMsg.AddressUpdate = make([][]byte, 0, 100)
+	cmdMsg.Addresses = make([][]byte, 0, 100)
 	cmdMsg.Unsubscribe = false
 	for valuesk, valuesv := range r.URL.Query() {
 		switch valuesk {
@@ -354,7 +354,7 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 				if (strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X")) && len(value) == (len(ids.ShortEmpty)+1)*2 {
 					sid, err := AddressToID(value[2:])
 					if err == nil {
-						cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, sid[:])
+						cmdMsg.Addresses = append(cmdMsg.Addresses, sid[:])
 						continue
 					}
 				}
@@ -362,11 +362,11 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 				if len(value) == len(ids.ShortEmpty)*2 {
 					sid, err := AddressToID(value)
 					if err == nil {
-						cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, sid[:])
+						cmdMsg.Addresses = append(cmdMsg.Addresses, sid[:])
 						continue
 					}
 				}
-				cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, []byte(value))
+				cmdMsg.Addresses = append(cmdMsg.Addresses, []byte(value))
 			}
 		default:
 		}

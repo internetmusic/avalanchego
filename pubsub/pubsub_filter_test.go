@@ -58,15 +58,15 @@ func TestFilter(t *testing.T) {
 func TestCommandMessage_TransposeAddress(t *testing.T) {
 	hrp := constants.GetHRP(5)
 	cmdMsg := &CommandMessage{}
-	cmdMsg.AddressUpdate = make([][]byte, 0, 1)
+	cmdMsg.Addresses = make([][]byte, 0, 1)
 	idsid1, _ := hex2Short("0000000000000000000000000000000000000001")
 	b32addr, _ := formatting.FormatBech32(hrp, idsid1[:])
 	if !strings.HasPrefix(b32addr, hrp) {
 		t.Fatalf("address transpose failed")
 	}
-	cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, []byte("Z-"+b32addr))
+	cmdMsg.Addresses = append(cmdMsg.Addresses, []byte("Z-"+b32addr))
 	cmdMsg.TransposeAddress(hrp)
-	if !bytes.Equal(cmdMsg.AddressUpdate[0], idsid1[:]) {
+	if !bytes.Equal(cmdMsg.Addresses[0], idsid1[:]) {
 		t.Fatalf("address transpose failed")
 	}
 }
