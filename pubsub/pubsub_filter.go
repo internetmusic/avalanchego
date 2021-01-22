@@ -18,8 +18,8 @@ import (
 	avalancheGoJson "github.com/ava-labs/avalanchego/utils/json"
 )
 
-// MaxBitSet the max number of bytes
-const MaxBitSet = (1 * 1024 * 1024) * 8
+// MaxBytes the max number of bytes
+const MaxBytes = (1 * 1024 * 1024)
 
 type FilterParam struct {
 	lock          sync.RWMutex
@@ -314,7 +314,7 @@ func (ps *pubsubfilter) updateNewFilter(cmdMsg *CommandMessage, fp *FilterParam)
 	if bfilter == nil || cmdMsg.IsNewFilter() {
 		cmdMsg.FilterOrDefault()
 		var err error
-		bfilter, err = bloom.New(cmdMsg.FilterMax, cmdMsg.FilterError, MaxBitSet)
+		bfilter, err = bloom.New(cmdMsg.FilterMax, cmdMsg.FilterError, MaxBytes)
 		if err != nil {
 			return nil, err
 		}
