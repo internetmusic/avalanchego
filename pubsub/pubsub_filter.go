@@ -159,6 +159,40 @@ func (c *CommandMessage) TransposeAddress(hrp string) {
 	}
 }
 
+func (c *CommandMessage) ParseQuery(q map[string][]string) {
+	if len(q) == 0 {
+		return
+	}
+	if c.Addresses == nil {
+		c.Addresses = make([][]byte, 0, 10)
+	}
+	for valuesk, valuesv := range q {
+		switch valuesk {
+		case ParamAddress:
+			for _, value := range valuesv {
+				// 0x or 0X followed by enough bytes for a ids.ShortID
+				if (strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X")) && len(value) == (len(ids.ShortEmpty)+1)*2 {
+					sid, err := AddressToID(value[2:])
+					if err == nil {
+						c.Addresses = append(c.Addresses, sid[:])
+						continue
+					}
+				}
+				//  enough bytes for a ids.ShortID
+				if len(value) == len(ids.ShortEmpty)*2 {
+					sid, err := AddressToID(value)
+					if err == nil {
+						c.Addresses = append(c.Addresses, sid[:])
+						continue
+					}
+				}
+				c.Addresses = append(c.Addresses, []byte(value))
+			}
+		default:
+		}
+	}
+}
+
 type errorMsg struct {
 	Error string `json:"error"`
 }
@@ -242,12 +276,7 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection) (bool, []byt
 	if err != nil {
 		return true, b, err
 	}
-	sendMsg := func(msg interface{}) {
-		if c == nil {
-			return
-		}
-		_ = c.Send(msg)
-	}
+	sendMsg := func(msg interface{}) { _ = c.Send(msg) }
 	switch cmdMsg.Command {
 	case "":
 		return ps.handleCommandEmpty(sendMsg, cmdMsg, b)
@@ -344,36 +373,10 @@ func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
 
 func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterParam {
 	cmdMsg := &CommandMessage{}
-	cmdMsg.Addresses = make([][]byte, 0, 100)
 	cmdMsg.Unsubscribe = false
-	for valuesk, valuesv := range r.URL.Query() {
-		switch valuesk {
-		case ParamAddress:
-			for _, value := range valuesv {
-				// 0x or 0X followed by enough bytes for a ids.ShortID
-				if (strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X")) && len(value) == (len(ids.ShortEmpty)+1)*2 {
-					sid, err := AddressToID(value[2:])
-					if err == nil {
-						cmdMsg.Addresses = append(cmdMsg.Addresses, sid[:])
-						continue
-					}
-				}
-				//  enough bytes for a ids.ShortID
-				if len(value) == len(ids.ShortEmpty)*2 {
-					sid, err := AddressToID(value)
-					if err == nil {
-						cmdMsg.Addresses = append(cmdMsg.Addresses, sid[:])
-						continue
-					}
-				}
-				cmdMsg.Addresses = append(cmdMsg.Addresses, []byte(value))
-			}
-		default:
-		}
-	}
+	cmdMsg.ParseQuery(r.URL.Query())
 	cmdMsg.TransposeAddress(ps.hrp)
-	sendMsg := func(_ interface{}) {
-	}
+	sendMsg := func(_ interface{}) {}
 	_, _, _ = ps.handleCommandAddressUpdate(sendMsg, cmdMsg, fp, []byte(""))
 	return fp
 }
