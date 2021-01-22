@@ -30,22 +30,22 @@ var FilterTypeDefault = FilterTypeWillf
 
 type Filter interface {
 	// Add adds to filter, assumed thread safe
-	Add([]byte) error
+	Add(...[]byte)
 	// Check checks filter, assumed thread safe
 	Check([]byte) bool
 	MarshalJSON() ([]byte, error)
 }
 
-func New(maxN uint64, p float64, maxBits uint64) (Filter, error) {
+func New(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
 	switch FilterTypeDefault {
 	case FilterTypeSteakKnife:
-		return NewSteakKnifeFilter(maxN, p, maxBits)
+		return NewSteakKnifeFilter(maxN, p, maxBytes)
 	case FilterTypeWillf:
-		return NewWillfFilter(maxN, p, maxBits)
+		return NewWillfFilter(maxN, p, maxBytes)
 	case FilterTypeBtcsuite:
-		return NewBtcsuiteFilter(maxN, p, maxBits)
+		return NewBtcsuiteFilter(maxN, p, maxBytes)
 	}
-	return NewWillfFilter(maxN, p, maxBits)
+	return NewWillfFilter(maxN, p, maxBytes)
 }
 
 type willfFilter struct {
@@ -53,7 +53,7 @@ type willfFilter struct {
 	bfilter *willfBloom.BloomFilter
 }
 
-func NewWillfFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
+func NewWillfFilter(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
 	m := uint(streakKnife.OptimalM(maxN, p))
 	k := uint(streakKnife.OptimalK(uint64(m), maxN))
 
@@ -62,18 +62,19 @@ func NewWillfFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
 	// to ensure we don't crash memory, we would ensure the size
 	// 8 == sizeof(uint64))
 	wordsNeeded := WordsNeeded(m)
-	msize := wordsNeeded * 8
-	if uint64(msize) > maxBits {
+	msize := wordsNeeded
+	if uint64(msize) > maxBytes {
 		return nil, fmt.Errorf("filter too large")
 	}
 	return &willfFilter{bfilter: willfBloom.New(m, k)}, nil
 }
 
-func (f *willfFilter) Add(b []byte) error {
+func (f *willfFilter) Add(bl ...[]byte) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	f.bfilter.Add(b)
-	return nil
+	for _, b := range bl {
+		f.bfilter.Add(b)
+	}
 }
 
 func (f *willfFilter) Check(b []byte) bool {
@@ -91,7 +92,7 @@ type steakKnifeFilter struct {
 	bfilter *streakKnife.Filter
 }
 
-func NewSteakKnifeFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
+func NewSteakKnifeFilter(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
 	m := streakKnife.OptimalM(maxN, p)
 	k := streakKnife.OptimalK(m, maxN)
 
@@ -99,25 +100,28 @@ func NewSteakKnifeFilter(maxN uint64, p float64, maxBits uint64) (Filter, error)
 	// the calculation is the size of the bitset which would be created from this filter.
 	// to ensure we don't crash memory, we would ensure the size
 	// 8 == sizeof(uint64))
-	msize := ((m + 63) / 64) * 8
-	msize += k * 8
-	if msize > maxBits {
+	msize := (m + 63) / 64
+	msize += k
+	if msize > maxBytes {
 		return nil, fmt.Errorf("filter too large")
 	}
 	bfilter, err := streakKnife.New(m, k)
 	return &steakKnifeFilter{bfilter: bfilter}, err
 }
 
-func (f *steakKnifeFilter) Add(b []byte) error {
+func (f *steakKnifeFilter) Add(bl ...[]byte) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	h := murmur3.New64()
-	_, err := h.Write(b)
-	if err != nil {
-		return err
+	for _, b := range bl {
+		h := murmur3.New64()
+		_, errf := h.Write(b)
+
+		// this shouldnt happen
+		if errf != nil {
+			continue
+		}
+		f.bfilter.Add(h)
 	}
-	f.bfilter.Add(h)
-	return nil
 }
 
 func (f *steakKnifeFilter) Check(b []byte) bool {
@@ -247,13 +251,13 @@ type btcsuiteFilter struct {
 	bfilter *btcsuite.Filter
 }
 
-func NewBtcsuiteFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
+func NewBtcsuiteFilter(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
 	tweak := uint32(time.Now().UnixNano())
 
 	dataLen := uint32(-1 * float64(maxN) * math.Log(p) / Ln2Squared)
 	dataLen = MinUint32(dataLen, btcsuiteWire.MaxFilterLoadFilterSize*8) / 8
 
-	if uint64(dataLen) > maxBits/8 {
+	if uint64(dataLen) > maxBytes {
 		return nil, fmt.Errorf("filter too large")
 	}
 
@@ -261,11 +265,12 @@ func NewBtcsuiteFilter(maxN uint64, p float64, maxBits uint64) (Filter, error) {
 	return &btcsuiteFilter{bfilter: bfilter}, nil
 }
 
-func (f *btcsuiteFilter) Add(b []byte) error {
+func (f *btcsuiteFilter) Add(bl ...[]byte) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	f.bfilter.Add(b)
-	return nil
+	for _, b := range bl {
+		f.bfilter.Add(b)
+	}
 }
 
 func (f *btcsuiteFilter) Check(b []byte) bool {

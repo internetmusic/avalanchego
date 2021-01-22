@@ -1,10 +1,15 @@
 package pubsub
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
+
+	avalancheGoJson "github.com/ava-labs/avalanchego/utils/json"
 
 	"github.com/ava-labs/avalanchego/utils/bloom"
 
@@ -76,6 +81,27 @@ func TestCompare(t *testing.T) {
 	}
 }
 
+func TestFilterParamUpdateMulti(t *testing.T) {
+	fp := NewFilterParam()
+	bl := make([][]byte, 0, 10)
+	bl = append(bl, []byte("abc"))
+	bl = append(bl, []byte("def"))
+	bl = append(bl, []byte("xyz"))
+	_ = fp.UpdateAddressMulti(false, 10, bl...)
+	if len(fp.address) != 3 {
+		t.Fatalf("update multi failed")
+	}
+	if _, exists := fp.address[ByteToID([]byte("abc"))]; !exists {
+		t.Fatalf("update multi failed")
+	}
+	if _, exists := fp.address[ByteToID([]byte("def"))]; !exists {
+		t.Fatalf("update multi failed")
+	}
+	if _, exists := fp.address[ByteToID([]byte("xyz"))]; !exists {
+		t.Fatalf("update multi failed")
+	}
+}
+
 func TestFilterParam(t *testing.T) {
 	mockFilter := bloom.NewMock()
 
@@ -93,7 +119,7 @@ func TestFilterParam(t *testing.T) {
 	}
 	delete(fp.address, idsv)
 
-	_ = mockFilter.Add([]byte("hello"))
+	mockFilter.Add([]byte("hello"))
 	if !fp.CheckAddress([]byte("hello")) {
 		t.Fatalf("check address failed")
 	}
@@ -101,13 +127,13 @@ func TestFilterParam(t *testing.T) {
 		t.Fatalf("check address failed")
 	}
 	idsv = ids.GenerateTestShortID()
-	if fp.UpdateAddress(idsv, false, 10) != nil {
+	if fp.UpdateAddress(false, 10, idsv) != nil {
 		t.Fatalf("update address failed")
 	}
 	if len(fp.address) != 1 {
 		t.Fatalf("update address failed")
 	}
-	if fp.UpdateAddress(idsv, true, 10) != nil {
+	if fp.UpdateAddress(true, 10, idsv) != nil {
 		t.Fatalf("update address failed")
 	}
 	if len(fp.address) != 0 {
@@ -116,12 +142,88 @@ func TestFilterParam(t *testing.T) {
 
 	for i := 0; i < 11; i++ {
 		idsv := ids.GenerateTestShortID()
-		if fp.UpdateAddress(idsv, false, 10) != nil {
+		if fp.UpdateAddress(false, 10, idsv) != nil {
 			t.Fatalf("update address failed")
 		}
 	}
 	idsv = ids.GenerateTestShortID()
-	if fp.UpdateAddress(idsv, false, 10) == nil {
+	if fp.UpdateAddress(false, 10, idsv) == nil {
 		t.Fatalf("update address failed")
+	}
+}
+
+func TestCommandMessage(t *testing.T) {
+	cm := &CommandMessage{}
+	if cm.IsNewFilter() {
+		t.Fatalf("new filter check failed")
+	}
+	cm.FilterOrDefault()
+	if cm.FilterMax != DefaultFilterMax && cm.FilterError != DefaultFilterError {
+		t.Fatalf("default filter check failed")
+	}
+	cm.FilterMax = 1
+	cm.FilterError = .1
+	cm.FilterOrDefault()
+	if cm.FilterMax != 1 && cm.FilterError != .1 {
+		t.Fatalf("default filter check failed")
+	}
+}
+
+func TestFuncCommandEmpty(t *testing.T) {
+	psf := &pubsubfilter{}
+	send := make(chan interface{}, 100)
+	cmdMsg := &CommandMessage{}
+	cmdMsg.Channel = "testchannel"
+	cmdMsg.Unsubscribe = true
+	bin := []byte("testbytes")
+	res, bout, err := psf.handleCommandEmpty(cmdMsg, send, bin)
+	if err != nil {
+		t.Fatalf("handle command empty failed")
+	}
+	if res {
+		t.Fatalf("handle command empty failed")
+	}
+	channelBytes, _ := json.Marshal(&cmdMsg.Subscribe)
+	if !bytes.Equal(bout, channelBytes) {
+		t.Fatalf("handle command empty failed")
+	}
+	if !strings.Contains(string(channelBytes), "\"testchannel\"") {
+		t.Fatalf("handle command empty failed")
+	}
+}
+
+func TestUpdateNewFiler(t *testing.T) {
+	psf := &pubsubfilter{}
+	cmdMsg := &CommandMessage{}
+	fp := NewFilterParam()
+	filter, err := psf.updateNewFilter(cmdMsg, fp)
+	if err != nil {
+		t.Fatalf("handle new filter failed")
+	}
+	if filter == nil {
+		t.Fatalf("handle new filter failed")
+	}
+}
+
+func TestFetchFilterCommand(t *testing.T) {
+	psf := &pubsubfilter{
+		filterParams: make(map[*avalancheGoJson.Connection]*FilterParam),
+	}
+	c := &avalancheGoJson.Connection{}
+	fp := psf.fetchFilterParam(c)
+	if fp == nil {
+		t.Fatalf("fetch filter param failed")
+	}
+	fp.address = make(map[ids.ShortID]struct{})
+	fp.address[ids.ShortEmpty] = struct{}{}
+	fp = psf.fetchFilterParam(c)
+	if fp == nil {
+		t.Fatalf("fetch filter param failed")
+	}
+	if len(fp.address) == 0 {
+		t.Fatalf("fetch filter param failed")
+	}
+	if _, exists := fp.address[ids.ShortEmpty]; !exists {
+		t.Fatalf("fetch filter param failed")
 	}
 }

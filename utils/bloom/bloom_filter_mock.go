@@ -15,12 +15,14 @@ func NewMock() Filter {
 	return &mockBloomFilter{values: make(map[string]struct{})}
 }
 
-func (f *mockBloomFilter) Add(b []byte) error {
+func (f *mockBloomFilter) Add(bl ...[]byte) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	f.values[hex.EncodeToString(b)] = struct{}{}
-	return nil
+	for _, b := range bl {
+		f.values[hex.EncodeToString(b)] = struct{}{}
+	}
 }
+
 func (f *mockBloomFilter) Check(b []byte) bool {
 	f.lock.RLock()
 	defer f.lock.RUnlock()

@@ -33,7 +33,7 @@ func TestFilter(t *testing.T) {
 	tx.UnsignedTx = &baseTx
 	parser := NewPubSubParser(&tx)
 	fp := pubsub.NewFilterParam()
-	_ = fp.UpdateAddress(idsid, false, 1000)
+	_ = fp.UpdateAddress(false, 1000, idsid)
 	fr := parser.Filter(fp)
 	if fr == nil {
 		t.Fatalf("filter failed")
