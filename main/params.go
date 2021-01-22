@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ava-labs/avalanchego/external/viper"
 	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
 
 	"github.com/ava-labs/avalanchego/database/leveldb"
 	"github.com/ava-labs/avalanchego/database/memdb"
@@ -242,6 +242,7 @@ func avalancheFlagSet() *flag.FlagSet {
 // and any parsed command line flags
 func getViper() (*viper.Viper, error) {
 	v := viper.New()
+	v.SetKeysCaseSensitive(true)
 
 	fs := avalancheFlagSet()
 	pflag.CommandLine.AddGoFlagSet(fs)
@@ -660,6 +661,7 @@ func setNodeConfig(v *viper.Viper) error {
 	Config.EnableCrypto = v.GetBool(signatureVerificationEnabledKey)
 
 	// ChainConfigs
+	// TODO: add back coreth parsing backup
 	Config.ChainConfigs = map[ids.ID]snow.ChainConfig{}
 	chainConfigsRaw := v.GetStringMap(chainConfigsKey)
 	for k, v := range chainConfigsRaw {
@@ -702,7 +704,6 @@ func setNodeConfig(v *viper.Viper) error {
 
 		Config.ChainConfigs[id] = config
 	}
-	fmt.Println(Config.ChainConfigs)
 
 	return nil
 }
