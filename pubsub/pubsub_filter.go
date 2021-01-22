@@ -372,7 +372,9 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 		}
 	}
 	cmdMsg.TransposeAddress(ps.hrp)
-	_, _, _ = ps.handleCommandAddressUpdate(nil, cmdMsg, fp, []byte(""))
+	sendMsg := func(_ interface{}) {
+	}
+	_, _, _ = ps.handleCommandAddressUpdate(sendMsg, cmdMsg, fp, []byte(""))
 	return fp
 }
 
