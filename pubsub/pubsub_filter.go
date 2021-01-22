@@ -19,7 +19,7 @@ import (
 )
 
 // MaxBytes the max number of bytes
-const MaxBytes = (1 * 1024 * 1024)
+const MaxBytes = 1 * 1024 * 1024
 
 type FilterParam struct {
 	lock          sync.RWMutex
@@ -353,7 +353,7 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 				// 0x or 0X followed by enough bytes for a ids.ShortID
 				if (strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X")) && len(value) == (len(ids.ShortEmpty)+1)*2 {
 					sid, err := AddressToID(value[2:])
-					if err != nil {
+					if err == nil {
 						cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, sid[:])
 						continue
 					}
@@ -361,7 +361,7 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 				//  enough bytes for a ids.ShortID
 				if len(value) == len(ids.ShortEmpty)*2 {
 					sid, err := AddressToID(value)
-					if err != nil {
+					if err == nil {
 						cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, sid[:])
 						continue
 					}
