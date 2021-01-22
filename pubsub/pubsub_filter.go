@@ -143,7 +143,7 @@ func (c *CommandMessage) FilterOrDefault() {
 func (c *CommandMessage) TransposeAddress(hrp string) {
 	for icnt, a := range c.AddressUpdate {
 		astr := string(a)
-		// chain for the chain, remove if found..  X-fuji....
+		// remove chain prefix if found..  X-fuji....
 		addressParts := strings.SplitN(astr, "-", 2)
 		if len(addressParts) >= 2 {
 			astr = addressParts[1]
@@ -351,6 +351,22 @@ func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterP
 		switch valuesk {
 		case ParamAddress:
 			for _, value := range valuesv {
+				// 0x or 0X followed by enough bytes for a ids.ShortID
+				if (strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X")) && len(value) == (len(ids.ShortEmpty)+1)*2 {
+					sid, err := AddressToID(value[2:])
+					if err != nil {
+						cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, sid[:])
+						continue
+					}
+				}
+				//  enough bytes for a ids.ShortID
+				if len(value) == len(ids.ShortEmpty)*2 {
+					sid, err := AddressToID(value)
+					if err != nil {
+						cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, sid[:])
+						continue
+					}
+				}
 				cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, []byte(value))
 			}
 		default:
@@ -399,11 +415,14 @@ func (ps *pubsubfilter) Register(channel string) error {
 	return ps.po.Register(channel)
 }
 
-func AddressToID(address string) ids.ShortID {
-	addrBytes, _ := hex.DecodeString(address)
+func AddressToID(address string) (ids.ShortID, error) {
+	addrBytes, err := hex.DecodeString(address)
+	if err != nil {
+		return ids.ShortEmpty, err
+	}
 	var sid ids.ShortID
 	copy(sid[:], addrBytes)
-	return sid
+	return sid, nil
 }
 
 func ByteToID(address []byte) ids.ShortID {

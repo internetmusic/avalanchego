@@ -33,7 +33,7 @@ func hex2Short(v string) (ids.ShortID, error) {
 
 func TestFilter(t *testing.T) {
 	idaddr1 := "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
-	idaddr2 := "0000000000000000000000000000000000000001"
+	idaddr2 := "0x0000000000000000000000000000000000000001"
 
 	pubsubfilter := &pubsubfilter{}
 	r := http.Request{}
@@ -61,6 +61,9 @@ func TestCommandMessage_TransposeAddress(t *testing.T) {
 	cmdMsg.AddressUpdate = make([][]byte, 0, 1)
 	idsid1, _ := hex2Short("0000000000000000000000000000000000000001")
 	b32addr, _ := formatting.FormatBech32(hrp, idsid1[:])
+	if !strings.HasPrefix(b32addr, hrp) {
+		t.Fatalf("address transpose failed")
+	}
 	cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, []byte("Z-"+b32addr))
 	cmdMsg.TransposeAddress(hrp)
 	if !bytes.Equal(cmdMsg.AddressUpdate[0], idsid1[:]) {
