@@ -28,6 +28,10 @@ var FilterTypeWillf FilterType = 2
 var FilterTypeBtcsuite FilterType = 3
 var FilterTypeDefault = FilterTypeWillf
 
+var (
+	ErrMaxBytes = fmt.Errorf("too large")
+)
+
 type Filter interface {
 	// Add adds to filter, assumed thread safe
 	Add(...[]byte)
@@ -39,13 +43,23 @@ type Filter interface {
 func New(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
 	switch FilterTypeDefault {
 	case FilterTypeSteakKnife:
-		return NewSteakKnifeFilter(maxN, p, maxBytes)
-	case FilterTypeWillf:
-		return NewWillfFilter(maxN, p, maxBytes)
+		neededBytes := BytesSteakKnifeFilter(maxN, p)
+		if neededBytes > maxBytes {
+			return nil, ErrMaxBytes
+		}
+		return NewSteakKnifeFilter(maxN, p)
 	case FilterTypeBtcsuite:
-		return NewBtcsuiteFilter(maxN, p, maxBytes)
+		neededBytes := BytesBtcsuiteFilter(maxN, p)
+		if neededBytes > maxBytes {
+			return nil, ErrMaxBytes
+		}
+		return NewBtcsuiteFilter(maxN, p)
 	}
-	return NewWillfFilter(maxN, p, maxBytes)
+	neededBytes := BytesWillfFilter(maxN, p)
+	if neededBytes > maxBytes {
+		return nil, ErrMaxBytes
+	}
+	return NewWillfFilter(maxN, p)
 }
 
 type willfFilter struct {
@@ -53,19 +67,18 @@ type willfFilter struct {
 	bfilter *willfBloom.BloomFilter
 }
 
-func NewWillfFilter(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
-	m := uint(streakKnife.OptimalM(maxN, p))
-	k := uint(streakKnife.OptimalK(uint64(m), maxN))
-
+func BytesWillfFilter(maxN uint64, p float64) uint64 {
 	// this is pulled from bitset.
 	// the calculation is the size of the bitset which would be created from this filter.
 	// to ensure we don't crash memory, we would ensure the size
+	m := uint(streakKnife.OptimalM(maxN, p))
 	// 8 == sizeof(uint64))
-	wordsNeeded := WordsNeeded(m)
-	msize := wordsNeeded
-	if uint64(msize) > maxBytes {
-		return nil, fmt.Errorf("filter too large")
-	}
+	return uint64(WordsNeeded(m)) * 8
+}
+
+func NewWillfFilter(maxN uint64, p float64) (Filter, error) {
+	m := uint(streakKnife.OptimalM(maxN, p))
+	k := uint(streakKnife.OptimalK(uint64(m), maxN))
 	return &willfFilter{bfilter: willfBloom.New(m, k)}, nil
 }
 
@@ -92,19 +105,24 @@ type steakKnifeFilter struct {
 	bfilter *streakKnife.Filter
 }
 
-func NewSteakKnifeFilter(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
+func BytesSteakKnifeFilter(maxN uint64, p float64) uint64 {
 	m := streakKnife.OptimalM(maxN, p)
 	k := streakKnife.OptimalK(m, maxN)
 
 	// this is pulled from bloomFilter.newBits and bloomfilter.newRandKeys
 	// the calculation is the size of the bitset which would be created from this filter.
 	// to ensure we don't crash memory, we would ensure the size
-	// 8 == sizeof(uint64))
 	msize := (m + 63) / 64
 	msize += k
-	if msize > maxBytes {
-		return nil, fmt.Errorf("filter too large")
-	}
+
+	// 8 == sizeof(uint64))
+	return msize * 8
+}
+
+func NewSteakKnifeFilter(maxN uint64, p float64) (Filter, error) {
+	m := streakKnife.OptimalM(maxN, p)
+	k := streakKnife.OptimalK(m, maxN)
+
 	bfilter, err := streakKnife.New(m, k)
 	return &steakKnifeFilter{bfilter: bfilter}, err
 }
@@ -251,15 +269,15 @@ type btcsuiteFilter struct {
 	bfilter *btcsuite.Filter
 }
 
-func NewBtcsuiteFilter(maxN uint64, p float64, maxBytes uint64) (Filter, error) {
-	tweak := uint32(time.Now().UnixNano())
-
+func BytesBtcsuiteFilter(maxN uint64, p float64) uint64 {
+	// ths is pulled from the btcsuite filter logic
 	dataLen := uint32(-1 * float64(maxN) * math.Log(p) / Ln2Squared)
 	dataLen = MinUint32(dataLen, btcsuiteWire.MaxFilterLoadFilterSize*8) / 8
+	return uint64(dataLen)
+}
 
-	if uint64(dataLen) > maxBytes {
-		return nil, fmt.Errorf("filter too large")
-	}
+func NewBtcsuiteFilter(maxN uint64, p float64) (Filter, error) {
+	tweak := uint32(time.Now().UnixNano())
 
 	bfilter := btcsuite.NewFilter(uint32(maxN), tweak, p, btcsuiteWire.BloomUpdateNone)
 	return &btcsuiteFilter{bfilter: bfilter}, nil
