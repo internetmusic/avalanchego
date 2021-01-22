@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/ava-labs/avalanchego/ids"
@@ -138,6 +139,25 @@ func (c *CommandMessage) FilterOrDefault() {
 	c.FilterError = DefaultFilterError
 }
 
+// TransposeAddress converts any b32 address to their byte equiv ids.ShortID.
+func (c *CommandMessage) TransposeAddress(hrp string) {
+	for icnt, a := range c.AddressUpdate {
+		astr := string(a)
+		// chain for the chain, remove if found..  X-fuji....
+		addressParts := strings.SplitN(astr, "-", 2)
+		if len(addressParts) >= 2 {
+			astr = addressParts[1]
+		}
+		if strings.HasPrefix(astr, hrp) && len(astr) > len(ids.ShortEmpty) {
+			_, _, abytes, err := formatting.ParseAddress("X-" + astr)
+			if err != nil {
+				continue
+			}
+			c.AddressUpdate[icnt] = abytes
+		}
+	}
+}
+
 type errorMsg struct {
 	Error string `json:"error"`
 }
@@ -204,7 +224,7 @@ func (ps *pubsubfilter) connectionCallback(conn *avalancheGoJson.Connection, cha
 
 func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan interface{}) (bool, []byte, error) {
 	var bb bytes.Buffer
-	_, r, err := c.Conn.NextReader()
+	_, r, err := c.NextReader()
 	if err != nil {
 		return true, []byte(""), err
 	}
@@ -218,6 +238,7 @@ func (ps *pubsubfilter) readCallback(c *avalancheGoJson.Connection, send chan in
 	if err != nil {
 		return true, b, err
 	}
+	cmdMsg.TransposeAddress(ps.hrp)
 	return ps.handleCommand(cmdMsg, send, ps.fetchFilterParam(c), b)
 }
 
@@ -304,7 +325,7 @@ func (ps *pubsubfilter) updateNewFilter(cmdMsg *CommandMessage, fp *FilterParam)
 
 func (ps *pubsubfilter) handleCommandAddressUpdate(cmdMsg *CommandMessage, send chan interface{}, fp *FilterParam, b []byte) (bool, []byte, error) {
 	err := fp.UpdateAddressMulti(cmdMsg.Unsubscribe, MaxAddresses, cmdMsg.AddressUpdate...)
-	if err != nil {
+	if err != nil && send != nil {
 		errmsg := &errorMsg{Error: err.Error()}
 		send <- errmsg
 	}
@@ -323,15 +344,20 @@ func (ps *pubsubfilter) buildFilter(r *http.Request) *FilterParam {
 }
 
 func (ps *pubsubfilter) queryToFilter(r *http.Request, fp *FilterParam) *FilterParam {
+	cmdMsg := &CommandMessage{}
+	cmdMsg.AddressUpdate = make([][]byte, 0, 100)
+	cmdMsg.Unsubscribe = false
 	for valuesk, valuesv := range r.URL.Query() {
 		switch valuesk {
 		case ParamAddress:
 			for _, value := range valuesv {
-				_ = fp.UpdateAddress(false, MaxAddresses, AddressToID(value))
+				cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, []byte(value))
 			}
 		default:
 		}
 	}
+	cmdMsg.TransposeAddress(ps.hrp)
+	_, _, _ = ps.handleCommandAddressUpdate(cmdMsg, nil, fp, []byte(""))
 	return fp
 }
 

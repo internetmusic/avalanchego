@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ava-labs/avalanchego/utils/constants"
+	"github.com/ava-labs/avalanchego/utils/formatting"
+
 	avalancheGoJson "github.com/ava-labs/avalanchego/utils/json"
 
 	"github.com/ava-labs/avalanchego/utils/bloom"
@@ -49,6 +52,19 @@ func TestFilter(t *testing.T) {
 	ids2, _ := hex2Short(idaddr2)
 	if fp.address[ids2] != struct{}{} {
 		t.Fatalf("build filter failed %s", idaddr2)
+	}
+}
+
+func TestCommandMessage_TransposeAddress(t *testing.T) {
+	hrp := constants.GetHRP(5)
+	cmdMsg := &CommandMessage{}
+	cmdMsg.AddressUpdate = make([][]byte, 0, 1)
+	idsid1, _ := hex2Short("0000000000000000000000000000000000000001")
+	b32addr, _ := formatting.FormatBech32(hrp, idsid1[:])
+	cmdMsg.AddressUpdate = append(cmdMsg.AddressUpdate, []byte("Z-"+b32addr))
+	cmdMsg.TransposeAddress(hrp)
+	if !bytes.Equal(cmdMsg.AddressUpdate[0], idsid1[:]) {
+		t.Fatalf("address transpose failed")
 	}
 }
 
